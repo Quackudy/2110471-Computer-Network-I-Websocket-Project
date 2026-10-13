@@ -3,6 +3,10 @@ name: Test, publish and deploy Relay
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'scripts/build_slides.py'
   pull_request:
   workflow_dispatch:
 

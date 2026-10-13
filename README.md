@@ -81,7 +81,7 @@ The socket tests cover unique names, presence/disconnects, sender spoofing, priv
 
 ## Auto-deployment
 
-Each push to **main** runs tests, publishes a multi-architecture image to **GHCR**, and deploys the exact commit tag to Oracle. Pull requests run tests without deployment. Actions are pinned to commit hashes. Registry access uses the short-lived `GITHUB_TOKEN`, passed over SSH on stdin. Registry credentials are removed after each deployment. Failed container health checks restore the previous application image when one exists.
+Each code push to **main** runs tests, publishes a multi-architecture image to **GHCR**, and deploys the exact commit tag to Oracle. Documentation-only pushes skip deployment so slide edits do not clear chat sessions. Pull requests run tests without deployment. Actions are pinned to commit hashes. Registry access uses the short-lived `GITHUB_TOKEN`, passed over SSH on stdin. Registry credentials are removed after each deployment. Failed container health checks restore the previous application image when one exists.
 
 GitHub Actions secrets:
 
