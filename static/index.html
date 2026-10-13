@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#174e43">
+  <title>Relay — a little closer</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Relay home"><span class="brand-mark">r<span>↗</span></span><span>relay<span class="brand-dot">.</span></span></a>
+      <div class="workspace-label">YOUR LITTLE CORNER OF THE INTERNET</div>
+      <div class="identity"><div class="avatar" id="my-avatar">?</div><div><strong id="my-name">Connecting…</strong><div class="identity-status"><span class="status-dot"></span><span id="connection-label">Offline</span></div></div><button class="icon-button" id="disconnect" title="Disconnect" aria-label="Disconnect">↪</button></div>
+      <div class="section-title"><h2>People online</h2><span class="count" id="user-count">0</span></div>
+      <div id="users" class="nav-list"></div>
+      <div class="section-title group-title"><h2>Group rooms</h2><button class="icon-button" id="new-group" title="Create a group" aria-label="Create a group">+</button></div>
+      <div id="groups" class="nav-list"></div>
+      <p id="no-groups" class="sidebar-hint">Good conversations start small.<br>Create the first room.</p>
+      <div class="sidebar-footer"><span class="tiny-mark">↗</span><div>Made for real conversations.<br><span>One message at a time.</span></div></div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar"><button class="icon-button mobile-menu" id="toggle-sidebar" aria-label="Toggle people and groups">☰</button><div class="breadcrumb">Your workspace <span>/</span> <strong id="breadcrumb-room">Welcome</strong></div><span class="connection-badge" id="connection-badge"><span class="status-dot"></span>Live connection</span></header>
+      <section id="welcome" class="welcome">
+        <div class="eyebrow"><span></span> A SPACE TO CONNECT</div>
+        <h1>Good company.<br><em>Great conversations.</em></h1>
+        <p class="welcome-copy">A quick hello, a shared idea, a plan coming together.<br>Pick someone to chat with, or make a room for your people.</p>
+        <div class="welcome-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><span class="spark spark-one">✳</span><span class="spark spark-two">✦</span><div class="art-bubble art-green"><span>hello there</span><span class="art-dot">●</span></div><div class="art-bubble art-cream"><span>let’s talk.</span><span>↗</span></div><div class="art-tag">a little closer, wherever you are</div></div>
+        <div class="welcome-actions"><button class="button primary" id="welcome-create">Start a group <span>↗</span></button><span>or say hello to someone online ←</span></div>
+        <div class="feature-notes"><div><span>01</span><strong>Your people, your rooms</strong><p>Private chats and groups you choose.</p></div><div><span>02</span><strong>More than just words</strong><p>Share files and keep ideas moving.</p></div><div><span>03</span><strong>Catch up in a moment</strong><p>Let AI summarize the conversation.</p></div></div>
+      </section>
+
+      <section id="chat" class="chat-panel" hidden>
+        <div class="room-header"><div class="room-heading"><div class="room-icon" id="room-icon">#</div><div><h1 id="room-name"></h1><p id="room-members"></p></div></div><button class="button secondary" id="summarize"><span>✧</span> Summarize</button></div>
+        <div class="room-toolbar"><span class="room-privacy" id="room-privacy"></span><label class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search this conversation" aria-label="Search this conversation"></label></div>
+        <div class="summary-card" id="summary-card" hidden><div class="summary-heading"><strong>✧ A quick catch-up</strong><button class="icon-button" id="close-summary" aria-label="Close summary">×</button></div><p id="summary-text"></p><small id="summary-model"></small></div>
+        <div class="messages" id="messages" role="log" aria-live="polite" aria-label="Conversation messages"></div>
+        <form id="composer" class="composer"><div class="composer-box"><button type="button" class="icon-button attachment-button" id="attach" title="Share a file, up to 256 KiB" aria-label="Attach a file">+</button><textarea id="message-input" rows="1" maxlength="4000" placeholder="Write a little something…" aria-label="Message"></textarea><button class="send-button" type="submit" aria-label="Send message">↑</button></div><div class="composer-footer"><span>Enter to send · Shift + Enter for a new line</span><span id="message-counter">0 / 4000</span></div></form>
+        <input type="file" id="file-input" hidden>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="login-dialog" class="login-dialog"><div class="login-art"><span class="brand-mark">r<span>↗</span></span><h2>A little closer.<br>Starting with hello.</h2><div class="login-line"></div><p>Your people.<br>Your conversations.<br>Your space.</p><span class="login-star">✳</span></div><form id="login-form" class="login-form"><div class="eyebrow">WELCOME TO RELAY</div><h1>What should we<br>call you?</h1><p>Pick a unique name and join the conversation.</p><label for="name-input">Your name</label><input id="name-input" name="name" maxlength="24" placeholder="e.g. Alex" autocomplete="nickname" required autofocus><p class="form-error" id="login-error" role="alert"></p><button class="button primary" id="join-button">Let’s go <span>↗</span></button><small>Your name is reserved while you’re connected.<br>Messages stay for this server session.</small></form></dialog>
+  <dialog id="group-dialog" class="group-dialog"><form id="group-form"><div class="dialog-heading"><div class="eyebrow">MAKE ROOM FOR YOUR PEOPLE</div><button type="button" class="icon-button" id="cancel-group" aria-label="Cancel">×</button></div><h2>A new conversation.</h2><p>You’ll be the first member. Others can choose to join.</p><label for="group-input">Room name</label><input id="group-input" maxlength="40" placeholder="e.g. Weekend plans" required><button class="button primary">Create room <span>↗</span></button></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

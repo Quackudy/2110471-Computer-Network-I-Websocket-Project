@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+network_key/
+key/
+*.pem
+*.key
+test-results/
+.DS_Store

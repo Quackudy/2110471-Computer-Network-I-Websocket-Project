@@ -1,0 +1,28 @@
+# Attach only Relay to the existing proxy; its configuration stays in its own project.
+services:
+  app:
+    environment:
+      PUBLIC_ORIGIN: https://${APP_DOMAIN:-relay.161.118.238.148.sslip.io}
+    networks:
+      - default
+      - proxy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: eventory-production_default
+      traefik.http.services.relay.loadbalancer.server.port: "8080"
+      traefik.http.routers.relay.rule: Host(`${APP_DOMAIN:-relay.161.118.238.148.sslip.io}`)
+      traefik.http.routers.relay.entrypoints: websecure
+      traefik.http.routers.relay.tls: "true"
+      traefik.http.routers.relay.tls.certresolver: letsencrypt
+      traefik.http.routers.relay.service: relay
+      traefik.http.routers.relay-http.rule: Host(`${APP_DOMAIN:-relay.161.118.238.148.sslip.io}`)
+      traefik.http.routers.relay-http.entrypoints: web
+      traefik.http.routers.relay-http.service: relay
+      traefik.http.routers.relay-http.middlewares: relay-https
+      traefik.http.middlewares.relay-https.redirectscheme.scheme: https
+      traefik.http.middlewares.relay-https.redirectscheme.permanent: "true"
+
+networks:
+  proxy:
+    external: true
+    name: eventory-production_default
