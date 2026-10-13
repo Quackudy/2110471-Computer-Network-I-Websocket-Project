@@ -106,7 +106,7 @@ Never commit SSH keys, GitHub tokens or `.env` files. The image uses a file allo
 
 ## Presentation and live demo
 
-Open `docs/implementation.html` locally. It follows the supplied **20-slide implementation explanation** template, contains real code excerpts, and includes a prompt disclosure. Use arrow keys to move slides or print to PDF. Regenerate after code changes with `python scripts/build_slides.py`.
+Open `docs/implementation.pdf` or `docs/implementation.html` locally. They follow the supplied **20-slide implementation explanation** template, contain real code excerpts, and include a prompt disclosure. The HTML supports arrow keys and printing. Regenerate after code changes with `python scripts/build_slides.py`, or add `--pdf` with the development dependencies and Chromium installed to export the PDF too.
 
 Before submission, replace the title-slide group/member placeholders. Demo with at least two physical computers and preferably three connected clients:
 

@@ -10,7 +10,7 @@ def code(filename, marker, count=14):
     lines = (ROOT / filename).read_text().splitlines()
     start = next(i for i, line in enumerate(lines) if marker in line)
     excerpt = "\n".join(lines[start:start + count])
-    return f'<div class="source">{escape(filename)} · line {start + 1}</div><pre><code>{escape(excerpt)}</code></pre>'
+    return f'<div class="source">Code snapshot · {escape(filename)} · line {start + 1}</div><pre><code>{escape(excerpt)}</code></pre>'
 
 
 def slide(title, body, tag="IMPLEMENTATION EXPLANATION", prompt=False):
@@ -76,9 +76,12 @@ slide("Special 3 · Delivery and read receipts", '<p>“Sent” means the server
 slide("Special 4 · Automated cloud deployment", '<p>Push to main → socket/browser tests → amd64 + arm64 image in GHCR → SSH to Oracle → pull that commit’s image → container health check → public HTTPS check.</p>' + code(".github/workflows/deploy.yml", 'platforms: linux/amd64', 5) + code("scripts/deploy.sh", '"${compose[@]}" pull', 10) + '<div class="note">Before submission: add team details, rehearse on two physical computers, and show a successful workflow run. Names/rooms/history are session-only and reset on deployment.</div>', prompt=True)
 
 assert len(slides) == 20
+for index in [4, 7, 8, 19]:
+    slides[index] = slides[index].replace('class="slide"', 'class="slide dense"', 1)
 css = '''
 *{box-sizing:border-box}body{margin:0;background:#e8eddf;color:#243b31;font-family:Arial,sans-serif}.slide{background:#fafaf6;width:min(1280px,100vw);min-height:720px;margin:30px auto;padding:40px 55px 65px;position:relative;box-shadow:0 8px 40px #263d2420}.tag{font-size:11px;letter-spacing:2px;color:#879a70;margin-bottom:20px}h1{font-family:Georgia,serif;font-size:39px;font-weight:400;line-height:1.2;margin:0 0 25px}h1 em{color:#7b9563;font-weight:400}p{font-size:18px;line-height:1.6;margin:13px 0}.lead{font-size:24px;max-width:900px}footer{position:absolute;bottom:24px;left:55px;right:55px;display:flex;justify-content:space-between;font-size:11px;color:#9aa68d;border-top:1px solid #e0e7d6;padding-top:12px}.note{border-left:3px solid #93af77;background:#edf3e6;padding:14px 18px;font-size:15px;line-height:1.6;margin-top:20px}.prompt{font-size:11px;color:#8b977f;margin-top:14px}.source{font-size:11px;color:#799464;margin:14px 0 6px}pre{background:#153e32;color:#e1edce;border-radius:9px;padding:15px 20px;font-size:13px;line-height:1.55;margin:0;overflow:auto;tab-size:4}table{border-collapse:collapse;width:100%;font-size:16px}th,td{text-align:left;padding:13px 15px;border-bottom:1px solid #dce6d2;line-height:1.5}th{background:#eaf1e1;color:#537342}td:first-child{width:190px}.architecture{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:35px 0}.stack{display:flex;flex-direction:column;gap:20px}.box{padding:25px 18px;text-align:center;background:#e2ebd6;border:1px solid #cbdabb;border-radius:12px;font-size:19px;min-width:170px}.box small,.arrow small{display:block;font-size:12px;color:#6f855b;line-height:1.6;margin-top:10px}.arrow{text-align:center;font-size:40px;color:#729156}.ai-row{border:1px solid #d7e4ca;border-radius:7px;padding:18px;text-align:center;color:#678450;margin:20px 0}.columns{display:flex;gap:35px;align-items:flex-start}.columns>div{flex:1;min-width:0}.phone{width:220px;max-height:460px;object-fit:contain;border-radius:12px;border:1px solid #d6e2cb}.reference{font-size:13px;color:#849577}a{color:#547940}nav{position:fixed;bottom:12px;right:20px;z-index:9;display:flex;gap:8px}nav button{border:1px solid #b9cfa5;background:#174e43;color:#e3f0d4;padding:9px 13px;border-radius:7px;cursor:pointer}html{scroll-behavior:smooth}@media print{@page{size:13.333in 7.5in;margin:0}body{background:white}.slide{width:1280px;height:720px;min-height:720px;margin:0;box-shadow:none;break-after:page;overflow:hidden}nav{display:none}*{print-color-adjust:exact;-webkit-print-color-adjust:exact}html{scroll-behavior:auto}}@media(max-width:700px){.slide{padding:30px 22px 70px;margin:16px auto}h1{font-size:30px}p{font-size:16px}.columns{flex-direction:column}.phone{width:190px}.architecture{flex-wrap:wrap}.box{min-width:140px;font-size:15px}.arrow{font-size:26px}pre{font-size:10px}footer{left:22px;right:22px}.tag{font-size:9px}}
 '''
+css += '.dense pre{font-size:12px;line-height:1.4;padding:12px 18px}.dense p{font-size:16px;line-height:1.5}.dense .note{font-size:14px;padding:12px 16px}.dense h1{margin-bottom:20px}'
 document = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relay — Implementation Explanation</title><style>' + css + '</style><body>' + "\n".join(slides) + '''
 <nav><button id="prev" aria-label="Previous slide">←</button><button id="next" aria-label="Next slide">→</button><button id="print">Print / PDF</button></nav>
 <script>const slides=[...document.querySelectorAll('.slide')];function move(d){let i=slides.findIndex(s=>s.getBoundingClientRect().top>=-50);if(i<0)i=slides.length-1;slides[Math.max(0,Math.min(slides.length-1,i+d))].scrollIntoView()}document.getElementById('prev').onclick=()=>move(-1);document.getElementById('next').onclick=()=>move(1);document.getElementById('print').onclick=()=>window.print();document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key==='PageDown'){e.preventDefault();move(1)}if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();move(-1)}})</script></body></html>'''
@@ -86,3 +89,28 @@ output = ROOT / "docs" / "implementation.html"
 output.parent.mkdir(exist_ok=True)
 output.write_text(document)
 print(f"Built {len(slides)} slides: {output}")
+
+if "--pdf" in __import__("sys").argv:
+    import asyncio
+    import os
+    from playwright.async_api import async_playwright
+
+    async def export_pdf():
+        async with async_playwright() as playwright:
+            options = {"headless": True}
+            if os.getenv("CHROMIUM_PATH"):
+                options["executable_path"] = os.environ["CHROMIUM_PATH"]
+            browser = await playwright.chromium.launch(**options)
+            page = await browser.new_page(viewport={"width": 1280, "height": 800})
+            await page.goto(output.as_uri())
+            await page.emulate_media(media="print")
+            issues = await page.evaluate('''[...document.querySelectorAll('.slide')].map((s,i)=>({
+                slide:i+1, footer:s.querySelector('footer').getBoundingClientRect().top,
+                content:Math.max(...[...s.children].filter(x=>x.tagName!=='FOOTER')
+                .map(x=>x.getBoundingClientRect().bottom))})).filter(x=>x.content>x.footer-8)''')
+            assert not issues, f"Slide content overlaps footer: {issues}"
+            await page.pdf(path=str(output.with_suffix(".pdf")), prefer_css_page_size=True, print_background=True)
+            await browser.close()
+            print("Exported PDF with 20 slides")
+
+    asyncio.run(export_pdf())

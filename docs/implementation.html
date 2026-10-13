@@ -1,6 +1,6 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relay — Implementation Explanation</title><style>
 *{box-sizing:border-box}body{margin:0;background:#e8eddf;color:#243b31;font-family:Arial,sans-serif}.slide{background:#fafaf6;width:min(1280px,100vw);min-height:720px;margin:30px auto;padding:40px 55px 65px;position:relative;box-shadow:0 8px 40px #263d2420}.tag{font-size:11px;letter-spacing:2px;color:#879a70;margin-bottom:20px}h1{font-family:Georgia,serif;font-size:39px;font-weight:400;line-height:1.2;margin:0 0 25px}h1 em{color:#7b9563;font-weight:400}p{font-size:18px;line-height:1.6;margin:13px 0}.lead{font-size:24px;max-width:900px}footer{position:absolute;bottom:24px;left:55px;right:55px;display:flex;justify-content:space-between;font-size:11px;color:#9aa68d;border-top:1px solid #e0e7d6;padding-top:12px}.note{border-left:3px solid #93af77;background:#edf3e6;padding:14px 18px;font-size:15px;line-height:1.6;margin-top:20px}.prompt{font-size:11px;color:#8b977f;margin-top:14px}.source{font-size:11px;color:#799464;margin:14px 0 6px}pre{background:#153e32;color:#e1edce;border-radius:9px;padding:15px 20px;font-size:13px;line-height:1.55;margin:0;overflow:auto;tab-size:4}table{border-collapse:collapse;width:100%;font-size:16px}th,td{text-align:left;padding:13px 15px;border-bottom:1px solid #dce6d2;line-height:1.5}th{background:#eaf1e1;color:#537342}td:first-child{width:190px}.architecture{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:35px 0}.stack{display:flex;flex-direction:column;gap:20px}.box{padding:25px 18px;text-align:center;background:#e2ebd6;border:1px solid #cbdabb;border-radius:12px;font-size:19px;min-width:170px}.box small,.arrow small{display:block;font-size:12px;color:#6f855b;line-height:1.6;margin-top:10px}.arrow{text-align:center;font-size:40px;color:#729156}.ai-row{border:1px solid #d7e4ca;border-radius:7px;padding:18px;text-align:center;color:#678450;margin:20px 0}.columns{display:flex;gap:35px;align-items:flex-start}.columns>div{flex:1;min-width:0}.phone{width:220px;max-height:460px;object-fit:contain;border-radius:12px;border:1px solid #d6e2cb}.reference{font-size:13px;color:#849577}a{color:#547940}nav{position:fixed;bottom:12px;right:20px;z-index:9;display:flex;gap:8px}nav button{border:1px solid #b9cfa5;background:#174e43;color:#e3f0d4;padding:9px 13px;border-radius:7px;cursor:pointer}html{scroll-behavior:smooth}@media print{@page{size:13.333in 7.5in;margin:0}body{background:white}.slide{width:1280px;height:720px;min-height:720px;margin:0;box-shadow:none;break-after:page;overflow:hidden}nav{display:none}*{print-color-adjust:exact;-webkit-print-color-adjust:exact}html{scroll-behavior:auto}}@media(max-width:700px){.slide{padding:30px 22px 70px;margin:16px auto}h1{font-size:30px}p{font-size:16px}.columns{flex-direction:column}.phone{width:190px}.architecture{flex-wrap:wrap}.box{min-width:140px;font-size:15px}.arrow{font-size:26px}pre{font-size:10px}footer{left:22px;right:22px}.tag{font-size:9px}}
-</style><body><section class="slide"><div class="tag">TERM PROJECT</div><h1>Socket Programming<br><em>A little closer, with Relay.</em></h1>
+.dense pre{font-size:12px;line-height:1.4;padding:12px 18px}.dense p{font-size:16px;line-height:1.5}.dense .note{font-size:14px;padding:12px 16px}.dense h1{margin-bottom:20px}</style><body><section class="slide"><div class="tag">TERM PROJECT</div><h1>Socket Programming<br><em>A little closer, with Relay.</em></h1>
 <p class="lead">A browser chat application with private rooms, voluntary group chats and local AI summaries.</p>
 <p><strong>Group:</strong> [add group number]<br><strong>Members:</strong> [add student IDs and names]</p>
 <div class="note">Generative AI disclosure — actual user prompts, excerpts with credential details omitted:<br>
@@ -21,7 +21,7 @@ These requests authorized the R1–R11 implementation and extras in the precedin
 <tr><td>TLS</td><td>Encrypt browser-to-proxy traffic; internal socket traffic stays on the Docker network.</td></tr>
 <tr><td>SSH + HTTPS registry</td><td>Authenticated deployment connection and pulling the container image from GHCR.</td></tr>
 <tr><td>Internal HTTP</td><td>Request AI inference from Ollama; it is not the client chat transport.</td></tr></table><footer><span>Relay · 2110471 Computer Network I</span><span>04 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R2 · Socket-only chat transport</h1><p>HTTP serves static files and health checks. Native browser WebSocket sends registration, room commands, text and files through the same persistent connection.</p><div class="source">static/app.js · line 30</div><pre><code>function connect(name) {
+<section class="slide dense"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R2 · Socket-only chat transport</h1><p>HTTP serves static files and health checks. Native browser WebSocket sends registration, room commands, text and files through the same persistent connection.</p><div class="source">Code snapshot · static/app.js · line 30</div><pre><code>function connect(name) {
   reset(); state.disconnected = false;
   $(&quot;join-button&quot;).disabled = true; $(&quot;login-error&quot;).textContent = &quot;Connecting…&quot;;
   const socket = new WebSocket(`${location.protocol === &quot;https:&quot; ? &quot;wss&quot; : &quot;ws&quot;}://${location.host}/ws`);
@@ -30,7 +30,7 @@ These requests authorized the R1–R11 implementation and extras in the precedin
   socket.addEventListener(&quot;message&quot;, event =&gt; {
     let data;
     try { data = JSON.parse(event.data); } catch { toast(&quot;The server sent an invalid response.&quot;); return; }
-    if (data.type === &quot;welcome&quot;) {</code></pre><div class="source">server.py · line 287</div><pre><code>        socket = web.WebSocketResponse(heartbeat=30, max_msg_size=400_000)
+    if (data.type === &quot;welcome&quot;) {</code></pre><div class="source">Code snapshot · server.py · line 287</div><pre><code>        socket = web.WebSocketResponse(heartbeat=30, max_msg_size=400_000)
         await socket.prepare(request)
         client = Client(socket)
         try:
@@ -38,7 +38,7 @@ These requests authorized the R1–R11 implementation and extras in the precedin
             async with asyncio.timeout(20):
                 while not client.name:</code></pre><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>05 / 20</span></footer></section>
 <section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Part 2<br><em>The complete chat.</em></h1><p class="lead">7 points · Complete R3–R11 before bonus features can be graded.</p><p>Names and presence → private rooms → explicit group membership → member-only routing.</p><footer><span>Relay · 2110471 Computer Network I</span><span>06 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R3 · Unique client names</h1><p>Names are validated and compared case-insensitively. The server assigns a session ID and reserves the name until disconnect.</p><div class="source">server.py · line 124</div><pre><code>            name = data.get(&quot;name&quot;)
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R3 · Unique client names</h1><p>Names are validated and compared case-insensitively. The server assigns a session ID and reserves the name until disconnect.</p><div class="source">Code snapshot · server.py · line 124</div><pre><code>            name = data.get(&quot;name&quot;)
             if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name.strip()):
                 raise ValueError(&quot;Use 1–24 letters, numbers, spaces, dots, underscores or hyphens.&quot;)
             name = name.strip()
@@ -54,7 +54,7 @@ These requests authorized the R1–R11 implementation and extras in the precedin
             return
 
         if action == &quot;open_private&quot;:</code></pre><div class="note">Demo: connect Alice, then try “alice” from another client. The second registration must fail.</div><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>07 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R4 · Everyone currently online</h1><p>Registration and disconnect broadcast fresh presence to every connected client. The list includes the current user.</p><div class="source">server.py · line 71</div><pre><code>    async def presence(self):
+<section class="slide dense"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R4 · Everyone currently online</h1><p>Registration and disconnect broadcast fresh presence to every connected client. The list includes the current user.</p><div class="source">Code snapshot · server.py · line 71</div><pre><code>    async def presence(self):
         await self.broadcast({
             &quot;type&quot;: &quot;state&quot;,
             &quot;users&quot;: [{&quot;id&quot;: c.id, &quot;name&quot;: c.name} for c in self.clients.values()],
@@ -62,7 +62,7 @@ These requests authorized the R1–R11 implementation and extras in the precedin
         })
 
     @staticmethod
-    def wire_message(message):</code></pre><div class="source">static/app.js · line 94</div><pre><code>function renderNav() {
+    def wire_message(message):</code></pre><div class="source">Code snapshot · static/app.js · line 94</div><pre><code>function renderNav() {
   $(&quot;user-count&quot;).textContent = state.users.length;
   $(&quot;users&quot;).replaceChildren();
   for (const user of state.users) {
@@ -70,7 +70,7 @@ These requests authorized the R1–R11 implementation and extras in the precedin
     const room = [...state.rooms.values()].find(r =&gt; r.kind === &quot;private&quot; &amp;&amp; r.members.some(m =&gt; m.id === user.id) &amp;&amp; !isMe);
     const button = node(&quot;button&quot;, `nav-row${room?.id === state.active ? &quot; active&quot; : &quot;&quot;}`);
     button.append(node(&quot;span&quot;, &quot;avatar&quot;, initials(user.name)));</code></pre><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>08 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R5 · Independent chat rooms</h1><p>Private rooms belong to a unique participant pair. Group rooms receive separate IDs. The client keeps a separate message list and draft for each room.</p><div class="source">server.py · line 144</div><pre><code>            members = {client.id, peer.id}
+<section class="slide dense"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R5 · Independent chat rooms</h1><p>Private rooms belong to a unique participant pair. Group rooms receive separate IDs. The client keeps a separate message list and draft for each room.</p><div class="source">Code snapshot · server.py · line 144</div><pre><code>            members = {client.id, peer.id}
             room = next((r for r in self.rooms.values()
                          if r.kind == &quot;private&quot; and r.members == members), None)
             if room is None:
@@ -80,25 +80,25 @@ These requests authorized the R1–R11 implementation and extras in the precedin
                             names={c.id: c.name for c in [client, peer]})
                 self.rooms[room.id] = room
             await asyncio.gather(*(self.open_room(c, room) for c in [client, peer]))
-        elif action == &quot;create_group&quot;:</code></pre><div class="source">static/app.js · line 127</div><pre><code>function activate(id) {
+        elif action == &quot;create_group&quot;:</code></pre><div class="source">Code snapshot · static/app.js · line 127</div><pre><code>function activate(id) {
   const previous = state.rooms.get(state.active);
   if (previous) previous.draft = $(&quot;message-input&quot;).value;
   state.active = id;
   const room = state.rooms.get(id); room.unread = 0;
   $(&quot;message-input&quot;).value = room.draft || &quot;&quot;; resizeComposer();
   $(&quot;search&quot;).value = &quot;&quot;; $(&quot;welcome&quot;).hidden = true; $(&quot;chat&quot;).hidden = false;</code></pre><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>09 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R6 · Chat window and input</h1><div class="columns"><div><p>Each selected room has its own message log and composer. New messages appear live; sending uses a WebSocket command.</p><div class="source">static/app.js · line 211</div><pre><code>$(&quot;composer&quot;).addEventListener(&quot;submit&quot;, event =&gt; { event.preventDefault(); const text = $(&quot;message-input&quot;).value.trim(); if (text &amp;&amp; state.active &amp;&amp; send({ type: &quot;message&quot;, room: state.active, text })) { $(&quot;message-input&quot;).value = &quot;&quot;; state.rooms.get(state.active).draft = &quot;&quot;; resizeComposer(); } });
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R6 · Chat window and input</h1><div class="columns"><div><p>Each selected room has its own message log and composer. New messages appear live; sending uses a WebSocket command.</p><div class="source">Code snapshot · static/app.js · line 211</div><pre><code>$(&quot;composer&quot;).addEventListener(&quot;submit&quot;, event =&gt; { event.preventDefault(); const text = $(&quot;message-input&quot;).value.trim(); if (text &amp;&amp; state.active &amp;&amp; send({ type: &quot;message&quot;, room: state.active, text })) { $(&quot;message-input&quot;).value = &quot;&quot;; state.rooms.get(state.active).draft = &quot;&quot;; resizeComposer(); } });
 $(&quot;message-input&quot;).addEventListener(&quot;input&quot;, resizeComposer);
 $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; { if (event.key === &quot;Enter&quot; &amp;&amp; !event.shiftKey &amp;&amp; !event.isComposing) { event.preventDefault(); $(&quot;composer&quot;).requestSubmit(); } });</code></pre><p>Enter sends; Shift + Enter inserts a new line. User text is rendered with <code>textContent</code>, so HTML remains text.</p></div><img class="phone" src="images/chat-mobile.png" alt="Actual mobile chat screenshot"></div><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>10 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R7 · Sender and recipient only</h1><p>The server derives the sender from the socket session, checks room membership, and delivers only to the room’s members. A third client cannot send, read or summarize this private room.</p><div class="source">server.py · line 83</div><pre><code>    def authorized_room(self, client, data):
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R7 · Sender and recipient only</h1><p>The server derives the sender from the socket session, checks room membership, and delivers only to the room’s members. A third client cannot send, read or summarize this private room.</p><div class="source">Code snapshot · server.py · line 83</div><pre><code>    def authorized_room(self, client, data):
         room_id = data.get(&quot;room&quot;)
         room = self.rooms.get(room_id) if isinstance(room_id, str) else None
         if room is None or client.id not in room.members:
             raise ValueError(&quot;Join this room before using it.&quot;)
         return room
-</code></pre><div class="source">server.py · line 203</div><pre><code>            self.retain(room, message)
+</code></pre><div class="source">Code snapshot · server.py · line 203</div><pre><code>            self.retain(room, message)
             await self.broadcast({&quot;type&quot;: &quot;message&quot;, &quot;message&quot;: self.wire_message(message)}, room.members)</code></pre><div class="note">Demo: three clients; send Alice → Bob while showing that the third client receives nothing.</div><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>11 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R8 · Creator starts alone</h1><p>Creating a group establishes exactly one member: the requesting client. The creator cannot automatically add other users.</p><div class="source">server.py · line 154</div><pre><code>        elif action == &quot;create_group&quot;:
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R8 · Creator starts alone</h1><p>Creating a group establishes exactly one member: the requesting client. The creator cannot automatically add other users.</p><div class="source">Code snapshot · server.py · line 154</div><pre><code>        elif action == &quot;create_group&quot;:
             name = data.get(&quot;name&quot;)
             if not isinstance(name, str) or not 1 &lt;= len(name.strip()) &lt;= 40:
                 raise ValueError(&quot;Group names must contain 1–40 characters.&quot;)
@@ -110,8 +110,8 @@ $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; {
             await self.open_room(client, room)
             await self.presence()
         elif action == &quot;join_group&quot;:</code></pre><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>12 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R9 · Browse all groups and members</h1><p>Presence includes all existing groups. Every client sees the current member list even before joining; message contents remain restricted.</p><div class="source">server.py · line 75</div><pre><code>            &quot;groups&quot;: [self.describe(r) for r in self.rooms.values() if r.kind == &quot;group&quot;],
-        })</code></pre><div class="source">static/app.js · line 50</div><pre><code>      for (const group of state.groups) { const room = state.rooms.get(group.id); if (room) Object.assign(room, group); }
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R9 · Browse all groups and members</h1><p>Presence includes all existing groups. Every client sees the current member list even before joining; message contents remain restricted.</p><div class="source">Code snapshot · server.py · line 75</div><pre><code>            &quot;groups&quot;: [self.describe(r) for r in self.rooms.values() if r.kind == &quot;group&quot;],
+        })</code></pre><div class="source">Code snapshot · static/app.js · line 50</div><pre><code>      for (const group of state.groups) { const room = state.rooms.get(group.id); if (room) Object.assign(room, group); }
       renderNav(); renderHeader();
     } else if (data.type === &quot;room&quot;) {
       const old = state.rooms.get(data.room.id);
@@ -124,7 +124,7 @@ $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; {
       const room = state.rooms.get(data.message.room);
       if (!room) return;
       if (!room.messages.some(m =&gt; m.id === data.message.id)) room.messages.push(data.message);</code></pre><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>13 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R10 · Join by your own choice</h1><p>The Join button sends a join request on the user’s own socket. The server adds only that socket’s identity. No command accepts a different user to add.</p><div class="source">server.py · line 165</div><pre><code>        elif action == &quot;join_group&quot;:
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R10 · Join by your own choice</h1><p>The Join button sends a join request on the user’s own socket. The server adds only that socket’s identity. No command accepts a different user to add.</p><div class="source">Code snapshot · server.py · line 165</div><pre><code>        elif action == &quot;join_group&quot;:
             room_id = data.get(&quot;room&quot;)
             room = self.rooms.get(room_id) if isinstance(room_id, str) else None
             if room is None or room.kind != &quot;group&quot;:
@@ -135,7 +135,7 @@ $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; {
             await self.presence()
         elif action in {&quot;message&quot;, &quot;file&quot;}:
             room = self.authorized_room(client, data)</code></pre><div class="note">A joining client does not receive messages sent before they were a member.</div><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>14 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R11 · Members-only group messages</h1><p>Both text and file messages use the same membership check. The server records the authorized audience when the message is sent.</p><div class="source">server.py · line 174</div><pre><code>        elif action in {&quot;message&quot;, &quot;file&quot;}:
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>R11 · Members-only group messages</h1><p>Both text and file messages use the same membership check. The server records the authorized audience when the message is sent.</p><div class="source">Code snapshot · server.py · line 174</div><pre><code>        elif action in {&quot;message&quot;, &quot;file&quot;}:
             room = self.authorized_room(client, data)
             if room.kind == &quot;private&quot; and not room.members &lt;= self.clients.keys():
                 raise ValueError(&quot;This user disconnected. Open a new chat when they return.&quot;)
@@ -145,12 +145,12 @@ $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; {
                 &quot;audience&quot;: set(room.members), &quot;read_by&quot;: [], &quot;delivered_by&quot;: [],
             }
             if action == &quot;message&quot;:
-                text = data.get(&quot;text&quot;)</code></pre><div class="source">server.py · line 60</div><pre><code>    async def broadcast(self, event, members=None):
+                text = data.get(&quot;text&quot;)</code></pre><div class="source">Code snapshot · server.py · line 60</div><pre><code>    async def broadcast(self, event, members=None):
         targets = [c for c in self.clients.values() if members is None or c.id in members]
         await asyncio.gather(*(self.send(c, event) for c in targets))
 </code></pre><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>15 / 20</span></footer></section>
 <section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Part 3<br><em>A little more useful.</em></h1><p class="lead">Four bonus candidates · at least one AI feature.</p><p>1. AI conversation summaries<br>2. Files through sockets<br>3. Delivery and read receipts<br>4. Oracle cloud deployment</p><div class="note">Message search is also implemented. The instructor decides the final acceptance of bonus features.</div><footer><span>Relay · 2110471 Computer Network I</span><span>16 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 1 · AI catch-up summaries</h1><p><strong>Model:</strong> Qwen2.5 0.5B Instruct via Ollama. Real model inference runs on the Oracle server. Only the requesting user’s authorized text history enters the prompt; only that user receives the summary.</p><div class="source">server.py · line 238</div><pre><code>                    async with session.post(AI_URL + &quot;/api/chat&quot;, json={
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 1 · AI catch-up summaries</h1><p><strong>Model:</strong> Qwen2.5 0.5B Instruct via Ollama. Real model inference runs on the Oracle server. Only the requesting user’s authorized text history enters the prompt; only that user receives the summary.</p><div class="source">Code snapshot · server.py · line 238</div><pre><code>                    async with session.post(AI_URL + &quot;/api/chat&quot;, json={
                         &quot;model&quot;: AI_MODEL, &quot;stream&quot;: False,
                         &quot;messages&quot;: [
                             {&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: &quot;Summarize the provided chat in 3 brief bullet points. &quot;
@@ -165,7 +165,7 @@ $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; {
                             raise ValueError(&quot;AI model is unavailable. Ask the administrator to check Ollama.&quot;)
                         result = await response.json()
             text = result.get(&quot;message&quot;, {}).get(&quot;content&quot;, &quot;&quot;).strip()</code></pre><p class="reference">References: <a href="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct">Qwen model card</a> · <a href="https://ollama.com/library/qwen2.5:0.5b">Ollama model</a> · <a href="https://docs.ollama.com/api/chat">Inference API</a>. Small models can make mistakes.</p><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>17 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 2 · Share a file</h1><p>Files travel inside WebSocket frames as base64 data, through the same private/group access rules. Downloads are attachments, not rendered content. Maximum: 256 KiB.</p><div class="source">server.py · line 189</div><pre><code>                filename, content = data.get(&quot;filename&quot;), data.get(&quot;data&quot;)
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 2 · Share a file</h1><p>Files travel inside WebSocket frames as base64 data, through the same private/group access rules. Downloads are attachments, not rendered content. Maximum: 256 KiB.</p><div class="source">Code snapshot · server.py · line 189</div><pre><code>                filename, content = data.get(&quot;filename&quot;), data.get(&quot;data&quot;)
                 if not isinstance(filename, str) or not 1 &lt;= len(filename) &lt;= 120:
                     raise ValueError(&quot;Invalid file name.&quot;)
                 if &quot;/&quot; in filename or &quot;\\&quot; in filename or any(ord(c) &lt; 32 for c in filename):
@@ -179,7 +179,7 @@ $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; {
                 if not 1 &lt;= len(decoded) &lt;= MAX_FILE:
                     raise ValueError(&quot;Files must contain 1 byte to 256 KiB.&quot;)
                 message.update(filename=filename, data=content, bytes=len(decoded))</code></pre><div class="note">Demo: transfer notes.txt privately and download it from the recipient browser. Verify that the third client receives nothing.</div><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>18 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 3 · Delivery and read receipts</h1><p>“Sent” means the server accepted the message. A recipient browser acknowledges receipt for “Delivered”. Opening the focused conversation sends “Read”. Receipts are restricted to the message’s original audience.</p><div class="source">server.py · line 205</div><pre><code>        elif action in {&quot;read&quot;, &quot;received&quot;}:
+<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 3 · Delivery and read receipts</h1><p>“Sent” means the server accepted the message. A recipient browser acknowledges receipt for “Delivered”. Opening the focused conversation sends “Read”. Receipts are restricted to the message’s original audience.</p><div class="source">Code snapshot · server.py · line 205</div><pre><code>        elif action in {&quot;read&quot;, &quot;received&quot;}:
             room = self.authorized_room(client, data)
             ids = data.get(&quot;ids&quot;)
             if not isinstance(ids, list) or len(ids) &gt; 100 or any(not isinstance(i, str) for i in ids):
@@ -195,11 +195,11 @@ $(&quot;message-input&quot;).addEventListener(&quot;keydown&quot;, event =&gt; {
                                          message[&quot;audience&quot;] &amp; room.members)
         elif action == &quot;summarize&quot;:
             room = self.authorized_room(client, data)</code></pre><div class="prompt">Generative AI prompt: shared project request disclosed on slide 1. Code generated with Codex, then checked with socket and browser tests.</div><footer><span>Relay · 2110471 Computer Network I</span><span>19 / 20</span></footer></section>
-<section class="slide"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 4 · Automated cloud deployment</h1><p>Push to main → socket/browser tests → amd64 + arm64 image in GHCR → SSH to Oracle → pull that commit’s image → container health check → public HTTPS check.</p><div class="source">.github/workflows/deploy.yml · line 68</div><pre><code>          platforms: linux/amd64,linux/arm64
+<section class="slide dense"><div class="tag">IMPLEMENTATION EXPLANATION</div><h1>Special 4 · Automated cloud deployment</h1><p>Push to main → socket/browser tests → amd64 + arm64 image in GHCR → SSH to Oracle → pull that commit’s image → container health check → public HTTPS check.</p><div class="source">Code snapshot · .github/workflows/deploy.yml · line 68</div><pre><code>          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.image.outputs.name }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max</code></pre><div class="source">scripts/deploy.sh · line 20</div><pre><code>&quot;${compose[@]}&quot; pull app ollama model-pull
+          cache-to: type=gha,mode=max</code></pre><div class="source">Code snapshot · scripts/deploy.sh · line 20</div><pre><code>&quot;${compose[@]}&quot; pull app ollama model-pull
 if ! &quot;${compose[@]}&quot; up -d --no-build --wait --wait-timeout 600; then
   echo &#x27;Deployment failed; restoring the previous application image.&#x27; &gt;&amp;2
   if [[ -n &quot;$previous&quot; ]]; then
