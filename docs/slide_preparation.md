@@ -162,4 +162,113 @@
 
 ---
 
-*(Slides R5 through Special 4 will be populated in the next steps)*
+### Slide 09: R5 – Independent Chat Rooms (Private & Group)
+* **Requirement:** Each chat between clients (both Private and Group message) must have its own chat room.
+* **Generative AI Prompt:**
+  ```text
+  Implement 1-on-1 private room management in ChatServer:
+  1. Define OpenPrivateCmd Pydantic model with peer: str.
+  2. In handle_open_private, check if a ChatRoom(kind='private') already exists with members == {session.id, peer.id}.
+  3. If not, instantiate a new ChatRoom with a unique UUID id and register both participant names.
+  4. Concurrently send the "room" metadata payload to both participants using open_room().
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  class OpenPrivateCmd(BaseModel):
+      type: Literal["open_private"] = "open_private"
+      peer: str
+
+  async def handle_open_private(self, session: UserSession, data: dict):
+      cmd = OpenPrivateCmd(**data)
+      peer = self.sessions.get(cmd.peer)
+      if peer is None or peer.id == session.id:
+          raise ValueError("Choose another online user.")
+
+      members = {session.id, peer.id}
+      room = next((r for r in self.rooms.values()
+                   if r.kind == "private" and r.members == members), None)
+      if room is None:
+          room = ChatRoom(uuid.uuid4().hex, "private", "Private conversation",
+                          members, names={s.id: s.name for s in [session, peer]})
+          self.rooms[room.id] = room
+      await asyncio.gather(*(self.open_room(s, room) for s in [session, peer]))
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Dedicated Room Entity:** Every pair of users gets their own unique `ChatRoom` instance.
+  * **Deduplication:** Clicking a peer multiple times re-opens the existing private room rather than creating duplicates.
+  * **Dual Notification:** Calling `open_room()` for both users ensures both participants' UI switches/updates concurrently.
+
+---
+
+### Slide 10: R6 – Chat Box & Chat Window (UI & Message Exchange)
+* **Requirement:** Each chat room must include a chat box for sending text messages and a chat window for displaying the sent messages and incoming messages.
+* **Generative AI Prompt:**
+  ```text
+  Design the client-side socket message composer and display window:
+  1. Listen for form submit on #composer and send JSON {"type": "message", "room": state.active, "text": text} over the WebSocket.
+  2. Render incoming messages securely using textContent inside #messages container.
+  3. Support Enter to send and Shift+Enter for multiline input.
+  4. Maintain separate message histories and drafts per room in state.rooms.
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```javascript
+  // static/app.js: Sending and rendering messages in dedicated chat window
+  $("composer").addEventListener("submit", event => {
+    event.preventDefault();
+    const text = $("message-input").value.trim();
+    if (text && state.active) {
+      send({ type: "message", room: state.active, text });
+      $("message-input").value = "";
+    }
+  });
+
+  // Safe DOM rendering with textContent prevents XSS attacks
+  const body = node("div", "message-body");
+  body.textContent = message.text;
+  row.append(avatar, header, body);
+  $("messages").append(row);
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Two-Way Interaction:** Clear visual separation between the `#message-input` composer box and the `#messages` scrollable chat window.
+  * **Security First:** Uses native `textContent` rather than `innerHTML`, ensuring HTML tags or script injection attempts render as harmless plain text.
+  * **Per-Room State:** When switching rooms, previous message history and current message drafts are preserved in client state.
+
+---
+
+### Slide 11: R7 – Sender and Recipient Isolation (Direct Messages)
+* **Requirement:** Each client can send a direct text message to any client in the list. Only the sender and receiver can see the messages.
+* **Generative AI Prompt:**
+  ```text
+  Implement direct message delivery with strict privacy isolation in ChatServer:
+  1. Define MessageCmd model validating room: str and text: str (1–4000 chars).
+  2. Implement authorized_room() that raises ValueError if the session is not in room.members.
+  3. Derive sender identity from session.id on the server (never trusting client-supplied sender values).
+  4. Broadcast the message JSON exclusively to room.members using self.broadcast(payload, room.members).
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  def authorized_room(self, session: UserSession, data: dict) -> ChatRoom:
+      room_id = data.get("room")
+      room = self.rooms.get(room_id) if isinstance(room_id, str) else None
+      if room is None or session.id not in room.members:
+          raise ValueError("Join this room before using it.")
+      return room
+
+  async def handle_message(self, session: UserSession, data: dict):
+      room = self.authorized_room(session, data)
+      cmd = MessageCmd(**data)
+      message = {
+          "id": uuid.uuid4().hex, "room": room.id, "sender": session.id,
+          "name": session.name, "timestamp": time.time(), "kind": "message",
+          "text": cmd.text, "audience": set(room.members), "read_by": [], "delivered_by": [],
+      }
+      self.retain(room, message)
+      await self.broadcast({"type": "message", "message": self.wire_message(message)}, room.members)
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Strict Privacy Isolation:** Messages are broadcast *only* to `room.members` (`{Alice, Bob}`). A third connected client ("Eve") receives zero packets.
+  * **Anti-Spoofing:** Sender ID and sender name are stamped by the server from `session.id` and `session.name`; forged `"sender"` fields in the client payload are completely ignored.
+
+---
+
+*(Slides R8 through Special 4 will be populated in the next steps)*
