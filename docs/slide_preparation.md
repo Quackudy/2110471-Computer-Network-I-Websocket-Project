@@ -243,31 +243,25 @@
   1. Define MessageCmd model validating room: str and text: str (1–4000 chars).
   2. Implement authorized_room() that raises ValueError if the session is not in room.members.
   3. Derive sender identity from session.id on the server (never trusting client-supplied sender values).
-  4. Broadcast the message JSON exclusively to room.members using self.broadcast(payload, room.members).
+  4. Append message to room.messages (deque maxlen=100) and broadcast JSON exclusively to room.members.
   ```
 * **Code Snapshot (for Slide Code Box):**
   ```python
-  def authorized_room(self, session: UserSession, data: dict) -> ChatRoom:
-      room_id = data.get("room")
-      room = self.rooms.get(room_id) if isinstance(room_id, str) else None
-      if room is None or session.id not in room.members:
-          raise ValueError("Join this room before using it.")
-      return room
-
   async def handle_message(self, session: UserSession, data: dict):
-      room = self.authorized_room(session, data)
       cmd = MessageCmd(**data)
+      room = self.authorized_room(session, cmd.room)
       message = {
           "id": uuid.uuid4().hex, "room": room.id, "sender": session.id,
           "name": session.name, "timestamp": time.time(), "kind": "message",
-          "text": cmd.text, "audience": set(room.members), "read_by": [], "delivered_by": [],
+          "text": cmd.text, "read_by": [], "delivered_by": [],
       }
-      self.retain(room, message)
-      await self.broadcast({"type": "message", "message": self.wire_message(message)}, room.members)
+      room.messages.append(message)
+      await self.broadcast({"type": "message", "message": message}, room.members)
   ```
 * **Speaker Notes / Talking Points:**
   * **Strict Privacy Isolation:** Messages are broadcast *only* to `room.members` (`{Alice, Bob}`). A third connected client ("Eve") receives zero packets.
   * **Anti-Spoofing:** Sender ID and sender name are stamped by the server from `session.id` and `session.name`; forged `"sender"` fields in the client payload are completely ignored.
+  * **Automatic Ring Buffer:** `room.messages` uses Python `deque(maxlen=100)`—automatically keeping the 100 newest messages without any complicated byte eviction logic.
 
 ---
 

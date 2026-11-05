@@ -1,6 +1,6 @@
 """
-Relay Chat Server (Version 2 - Clean Architecture with Pydantic & Dispatcher)
-Step 3: Private Rooms (R5, R6) and Direct Messaging (R7)
+Relay Chat Server (Version 2 - Simple & Clean Architecture)
+Single WebSocket Endpoint (/ws) + Pydantic Validation + Simple In-Memory State
 """
 
 import asyncio
@@ -20,17 +20,16 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_FILE = 256 * 1024
-MAX_HISTORY_BYTES = 32 * 1024 * 1024
 AI_MODEL = os.getenv("AI_MODEL", "qwen2.5:0.5b")
 NAME_PATTERN = re.compile(r"^[\w .-]{1,24}$", re.UNICODE)
 
 
 # ==============================================================================
-# 1. Pydantic Command Models (Validation Layer)
+# 1. Pydantic Command Models (Validation)
 # ==============================================================================
 
 class RegisterCmd(BaseModel):
-    """Validates user registration payload (R3)."""
+    """Validates client registration (R3)."""
     type: Literal["register"] = "register"
     name: str
 
@@ -44,13 +43,13 @@ class RegisterCmd(BaseModel):
 
 
 class OpenPrivateCmd(BaseModel):
-    """Validates opening a private 1-on-1 conversation (R5)."""
+    """Validates opening a private 1-on-1 chat (R5)."""
     type: Literal["open_private"] = "open_private"
     peer: str
 
 
 class MessageCmd(BaseModel):
-    """Validates text message sending (R6, R7)."""
+    """Validates sending a text message (R6, R7)."""
     type: Literal["message"] = "message"
     room: str
     text: str = Field(min_length=1, max_length=4000)
@@ -74,7 +73,7 @@ class UserSession:
     socket: web.WebSocketResponse
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = ""
-    requests: deque = field(default_factory=deque)  # For sliding-window rate limiting
+    requests: deque = field(default_factory=deque)  # Sliding-window rate limiter
 
 
 @dataclass
@@ -85,7 +84,8 @@ class ChatRoom:
     name: str
     members: set[str]  # Stores session.id of participants
     names: dict[str, str] = field(default_factory=dict)  # session.id -> display name
-    messages: deque = field(default_factory=deque)
+    # Automatic ring buffer: keeps only the last 100 messages, no manual eviction needed!
+    messages: deque = field(default_factory=lambda: deque(maxlen=100))
 
 
 # ==============================================================================
@@ -93,30 +93,32 @@ class ChatRoom:
 # ==============================================================================
 
 class ChatServer:
-    """Manages connected clients, rooms, and routes WebSocket commands."""
+    """Central server: routes WebSocket commands and holds in-memory state."""
 
     def __init__(self):
         self.sessions: dict[str, UserSession] = {}
         self.rooms: dict[str, ChatRoom] = {}
-        self.history_bytes = 0
-        self.sequence = 0
         
-        # Dispatch table: command "type" -> handler function
+        # Dispatcher lookup table
         self.handlers: dict[str, Callable] = {
             "register": self.handle_register,
             "open_private": self.handle_open_private,
             "message": self.handle_message,
         }
 
+    # --------------------------------------------------------------------------
+    # Simple Networking Helpers
+    # --------------------------------------------------------------------------
+
     async def send(self, session: UserSession, event: dict):
-        """Send a JSON frame safely to a single client socket."""
+        """Send a JSON event to a client."""
         try:
-            await asyncio.wait_for(session.socket.send_json(event), timeout=5.0)
-        except (ConnectionError, RuntimeError, asyncio.TimeoutError):
-            asyncio.create_task(session.socket.close())
+            await session.socket.send_json(event)
+        except Exception:
+            pass
 
     async def broadcast(self, event: dict, members: set[str] | None = None):
-        """Broadcast a JSON frame to all users or an authorized subset of members."""
+        """Send a JSON event to all clients or an authorized group of members."""
         targets = [
             s for s in self.sessions.values()
             if members is None or s.id in members
@@ -124,7 +126,7 @@ class ChatServer:
         await asyncio.gather(*(self.send(s, event) for s in targets))
 
     def describe_room(self, room: ChatRoom) -> dict:
-        """Helper to serialize a room description for client state."""
+        """Helper to serialize room metadata for clients."""
         return {
             "id": room.id,
             "kind": room.kind,
@@ -135,50 +137,23 @@ class ChatServer:
             ],
         }
 
-    @staticmethod
-    def wire_message(message: dict) -> dict:
-        """Strip internal server metadata (audience, size) before wire delivery."""
-        return {k: v for k, v in message.items() if k not in {"audience", "size", "sequence"}}
-
-    def authorized_room(self, session: UserSession, data: dict) -> ChatRoom:
-        """Verify the room exists and the session is an authorized participant."""
-        room_id = data.get("room")
-        room = self.rooms.get(room_id) if isinstance(room_id, str) else None
+    def authorized_room(self, session: UserSession, room_id: str) -> ChatRoom:
+        """Check that the room exists and the user is an authorized member."""
+        room = self.rooms.get(room_id)
         if room is None or session.id not in room.members:
             raise ValueError("Join this room before using it.")
         return room
 
     async def open_room(self, session: UserSession, room: ChatRoom):
-        """Deliver room metadata and authorized historical messages to a client."""
+        """Deliver room metadata and message history to a client."""
         await self.send(session, {
             "type": "room",
             "room": self.describe_room(room),
-            "messages": [
-                self.wire_message(m) for m in room.messages
-                if session.id in m["audience"]
-            ],
+            "messages": list(room.messages),
         })
 
-    def retain(self, room: ChatRoom, message: dict):
-        """Retain message in memory buffer with 32 MB upper bound."""
-        self.sequence += 1
-        message["sequence"] = self.sequence
-        message["size"] = len(json.dumps(self.wire_message(message)).encode())
-
-        if len(room.messages) >= 100:
-            self.history_bytes -= room.messages.popleft()["size"]
-        room.messages.append(message)
-        self.history_bytes += message["size"]
-
-        while self.history_bytes > MAX_HISTORY_BYTES:
-            oldest = min(
-                (r for r in self.rooms.values() if r.messages),
-                key=lambda r: r.messages[0]["sequence"]
-            )
-            self.history_bytes -= oldest.messages.popleft()["size"]
-
     async def broadcast_presence(self):
-        """Broadcast online users and active groups to all connected clients (R4)."""
+        """Broadcast online users and active groups to all clients (R4)."""
         await self.broadcast({
             "type": "state",
             "users": [{"id": s.id, "name": s.name} for s in self.sessions.values() if s.name],
@@ -186,11 +161,11 @@ class ChatServer:
         })
 
     # --------------------------------------------------------------------------
-    # Handlers
+    # Handlers (10-15 lines each, simple & focused)
     # --------------------------------------------------------------------------
 
     async def handle_register(self, session: UserSession, data: dict):
-        """R3: Validate and register unique client name."""
+        """R3: Register unique username (case-insensitive)."""
         cmd = RegisterCmd(**data)
 
         if any(s.name.casefold() == cmd.name.casefold() for s in self.sessions.values()):
@@ -200,7 +175,6 @@ class ChatServer:
             raise ValueError("The server is full. Try again later.")
 
         session.name = cmd.name
-        
         await self.send(session, {
             "type": "welcome",
             "id": session.id,
@@ -211,7 +185,7 @@ class ChatServer:
         await self.broadcast_presence()
 
     async def handle_open_private(self, session: UserSession, data: dict):
-        """R5: Open or create an isolated private chat room for two participants."""
+        """R5: Open or create an isolated 1-on-1 private room for two clients."""
         cmd = OpenPrivateCmd(**data)
         peer = self.sessions.get(cmd.peer)
         if peer is None or peer.id == session.id:
@@ -235,12 +209,13 @@ class ChatServer:
         await asyncio.gather(*(self.open_room(s, room) for s in [session, peer]))
 
     async def handle_message(self, session: UserSession, data: dict):
-        """R7: Deliver text message strictly to room members."""
-        room = self.authorized_room(session, data)
+        """R7: Send text message strictly to room members."""
+        cmd = MessageCmd(**data)
+        room = self.authorized_room(session, cmd.room)
+        
         if room.kind == "private" and not room.members <= self.sessions.keys():
             raise ValueError("This user disconnected. Open a new chat when they return.")
 
-        cmd = MessageCmd(**data)
         message = {
             "id": uuid.uuid4().hex,
             "room": room.id,
@@ -249,25 +224,24 @@ class ChatServer:
             "timestamp": time.time(),
             "kind": "message",
             "text": cmd.text,
-            "audience": set(room.members),
             "read_by": [],
             "delivered_by": [],
         }
 
-        self.retain(room, message)
-        # R7: Delivered strictly to room.members (only sender and receiver)
-        await self.broadcast(
-            {"type": "message", "message": self.wire_message(message)},
-            room.members
-        )
+        # Automatically stored in deque(maxlen=100)
+        room.messages.append(message)
+
+        # Broadcast strictly to members (Alice & Bob only)
+        await self.broadcast({"type": "message", "message": message}, room.members)
 
     # --------------------------------------------------------------------------
-    # Dispatcher Loop
+    # Central Dispatcher Loop
     # --------------------------------------------------------------------------
 
     async def dispatch(self, session: UserSession, raw_text: str):
         """Central entry point: rate-limit, parse JSON, validate, and route."""
         try:
+            # 1. Rate limiter (max 20 req/sec)
             now = time.monotonic()
             while session.requests and session.requests[0] < now - 1.0:
                 session.requests.popleft()
@@ -275,6 +249,7 @@ class ChatServer:
                 raise ValueError("Too many requests. Please slow down.")
             session.requests.append(now)
 
+            # 2. Parse JSON
             data = json.loads(raw_text)
             if not isinstance(data, dict):
                 raise ValueError("Payload must be a JSON object.")
@@ -283,9 +258,11 @@ class ChatServer:
             if not isinstance(action, str):
                 raise ValueError("Send a JSON object with a command type.")
 
+            # 3. Must register first
             if not session.name and action != "register":
                 raise ValueError("Choose a name first.")
 
+            # 4. Route to handler
             handler = self.handlers.get(action)
             if not handler:
                 raise ValueError("Unknown command.")
@@ -293,14 +270,11 @@ class ChatServer:
             await handler(session, data)
 
         except (ValidationError, ValueError) as err:
-            if isinstance(err, ValidationError):
-                msg = err.errors()[0]["msg"].removeprefix("Value error, ")
-            else:
-                msg = str(err)
+            msg = err.errors()[0]["msg"].removeprefix("Value error, ") if isinstance(err, ValidationError) else str(err)
             await self.send(session, {"type": "error", "message": msg})
 
     async def disconnect(self, session: UserSession):
-        """Clean up session on disconnect, purge abandoned private rooms, and update presence."""
+        """Clean up on disconnect and update presence."""
         if self.sessions.pop(session.id, None) is None:
             return
 
@@ -308,9 +282,8 @@ class ChatServer:
             if room.kind == "group":
                 room.members.discard(session.id)
                 room.names.pop(session.id, None)
-            # Private rooms retain history until BOTH participants disconnect
+            # Private rooms are cleaned when both users leave
             if room.kind == "private" and not room.members & self.sessions.keys():
-                self.history_bytes -= sum(m["size"] for m in room.messages)
                 del self.rooms[room_id]
 
         if session.name:
@@ -343,7 +316,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
 
 def create_app() -> web.Application:
-    """Create the aiohttp application with static HTTP routes and the /ws socket endpoint."""
+    """Create the aiohttp application with static routes and /ws socket endpoint."""
     server = ChatServer()
     app = web.Application()
     app["chat_server"] = server
