@@ -1,6 +1,7 @@
 # Presentation Slides Content & AI Prompts Log
 **Project:** Relay – WebSocket Chat Application (2110471 Computer Network I)
 **Architecture:** Python `aiohttp` + `Pydantic v2` Dispatcher + Native Browser WebSockets
+**Target:** 20-Slide Implementation Explanation (Score: 12.5 / 12.5 Points)
 
 ---
 
@@ -16,31 +17,37 @@
 
 ### Slide 02: Part 1 Overview
 * **Title:** Part 1 – System Architecture Design
-* **Key Requirement:** Must be fully completed before Part 2 can be graded.
+* **Key Requirement:** Must be fully completed before Part 2 can be graded (1.5 Points).
+* **Coverage:** R1 (System Architecture & Network Protocols) and R2 (Socket-Only Chat Transport).
 
 ---
 
-### Slide 03: R1 – System Architecture Design (Diagram & Topology)
+### Slide 03: R1 – System Architecture Design (Topology & Infrastructure)
 * **Requirement:** At least two clients running on different physical computers + server architecture.
-* **Architecture Diagram:**
-  * Client 1 (Physical Laptop A) $\to$ HTTPS/WSS (Port 443) $\to$ Traefik Reverse Proxy
-  * Client 2 (Physical Laptop B) $\to$ HTTPS/WSS (Port 443) $\to$ Traefik Reverse Proxy
-  * Traefik $\to$ Docker Internal Network (Port 8080) $\to$ Python `aiohttp` WebSocket Server
-  * Python Server $\to$ Internal Network (Port 11434) $\to$ Ollama (Qwen2.5 0.5B Instruct)
-* **Explanation:** Client and server are completely separated. The central server holds connection sessions and routes messages strictly to authorized participant sockets.
+* **Architecture Flowchart:**
+  ```text
+  [ Client 1 (Laptop A) ] ──┐
+                            ├──► [ Traefik Proxy : 443 ] ──► [ Python Server : 8080 ] ──► [ Ollama AI : 11434 ]
+  [ Client 2 (Laptop B) ] ──┘     (HTTPS / WSS : 443)          (HTTP / WebSocket : 8080)          (HTTP : 11434)
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Physical Separation:** Two independent physical laptops (Client 1 & Client 2) running browser clients on separate local IP addresses.
+  * **Edge Reverse Proxy:** Traefik terminates TLS on public port 443 with automated Let's Encrypt certificates.
+  * **Internal Network:** Python server runs on port 8080 inside Docker, communicating with local Ollama on port 11434 over a private network.
 
 ---
 
 ### Slide 04: R1 – Network Protocol Analysis
-* **Table of Protocols:**
-  | Protocol | Layer | Why Selected & How Used in Relay |
-  |---|---|---|
-  | **IP / TCP** | Network / Transport | Provides reliable, ordered packet delivery between physical hosts; underlies all WebSocket connections. |
-  | **HTTPS** | Application | Serves static assets (`index.html`, `app.js`, `style.css`) and initiates the standard HTTP-to-WebSocket upgrade handshake (`Upgrade: websocket`). |
-  | **WebSocket (WSS)** | Application | Full-duplex, persistent connection over a single TCP socket. All chat actions, messages, receipts, and files travel exclusively over `/ws`. |
-  | **JSON** | Presentation | Structured schema for dispatching commands and events inside WebSocket frames. |
-  | **TLS / SSL** | Security | Encrypts browser-to-proxy traffic to protect against sniffing and MITM attacks over public networks. |
-  | **Internal HTTP** | Application | Private container communication between the Python server and the Ollama inference engine (no public port exposed). |
+* **Table of Protocols (What / Why / How):**
+  * **TCP (Transport Layer)**
+    * **Why:** Since we’re using WebSocket and HTTP, TCP is naturally used underneath. It gives us reliable, ordered packet delivery between hosts so no chat messages are dropped or out of order.
+    * **How:** Works behind our WebSocket and HTTP connections as the underlying transport layer.
+  * **WebSocket (Application Layer)**
+    * **Why:** In our opinion, this is the easiest and most lightweight way to build our real-time chat application without slow HTTP polling.
+    * **How:** Acts as our main channel (`/ws`). All chat actions, messages, receipts, and files travel over this single persistent connection.
+  * **HTTP / HTTPS (Application Layer)**
+    * **Why:** The standard and simplest way to deliver our web interface to browser clients.
+    * **How:** Serves static files (`index.html`, `app.js`, `style.css`), performs the initial WebSocket upgrade handshake, and queries the local Ollama AI model.
 
 ---
 
@@ -48,38 +55,51 @@
 * **Requirement:** The chat messages between the server and each client must be implemented using Socket Programming only.
 * **Generative AI Prompt:**
   ```text
-  Create an asynchronous Python WebSocket chat backend using aiohttp and Pydantic. 
-  Ensure all chat commands travel strictly over a single persistent /ws endpoint.
-  Implement a clean architecture:
-  1. UserSession to encapsulate WebSocket connections and client metadata.
-  2. ChatRoom to hold participant sets and in-memory message history.
-  3. ChatServer with a dispatch() method routing commands to handlers and catching ValidationError centrally.
-  4. Separate static HTTP asset serving from real-time socket communication.
+  Implement an asynchronous WebSocket chat backend using Python aiohttp and Pydantic:
+  1. Define a persistent /ws endpoint that handles the HTTP-to-WebSocket upgrade handshake.
+  2. Implement a central dispatch() loop that parses incoming JSON frames, enforces rate limiting, and catches ValidationError centrally.
+  3. Keep chat operations strictly on the WebSocket connection without any HTTP POST chat endpoints.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Central Dispatcher):**
   ```python
-  # server_v2.py: Central dispatch and single /ws WebSocket transport
+  # server.py: Central Dispatcher & Error Interception
   async def dispatch(self, session: UserSession, raw_text: str):
       try:
           data = json.loads(raw_text)
-          handler = self.handlers.get(data.get("type"))
+          action = data.get("type")
+          if not session.name and action != "register":
+              raise ValueError("Choose a name first.")
+
+          handler = self.handlers.get(action)
           if not handler:
               raise ValueError("Unknown command.")
           await handler(session, data)
+
       except (ValidationError, ValueError) as err:
           msg = err.errors()[0]["msg"] if isinstance(err, ValidationError) else str(err)
           await self.send(session, {"type": "error", "message": msg})
-
+  ```
+* **Code Snapshot 2 (Right: WebSocket Transport Endpoint):**
+  ```python
+  # server.py: Single Persistent WebSocket Endpoint (/ws)
   async def ws_handler(request: web.Request) -> web.WebSocketResponse:
-      socket = web.WebSocketResponse(heartbeat=30.0)
+      server: ChatServer = request.app["chat_server"]
+      socket = web.WebSocketResponse(heartbeat=30.0, max_msg_size=400_000)
       await socket.prepare(request)
+
       session = UserSession(socket=socket)
-      ...
+      server.sessions[session.id] = session
+      try:
+          async for msg in socket:
+              if msg.type == WSMsgType.TEXT:
+                  await server.dispatch(session, msg.data)
+      finally:
+          await server.disconnect(session)
+      return socket
   ```
 * **Speaker Notes / Talking Points:**
-  * **R2 Compliance:** Chat messages, group joins, and receipts travel strictly over the `/ws` WebSocket endpoint. No HTTP POST/GET endpoints are used for chat.
-  * **Dispatcher Pattern:** Replaces long `if/elif` statements with a clean lookup table (`self.handlers`).
-  * **Central Error Handling:** Catches Pydantic `ValidationError` and standard `ValueError` in one place, automatically returning `{"type": "error", "message": ...}` to the client.
+  * **Pure Socket Transport:** Every chat action (registration, text messages, receipts, file chunks) travels strictly inside `/ws` WebSocket frames.
+  * **Dispatcher Architecture:** Replaces fragile `if/elif` chains with an extensible handler lookup table (`self.handlers`).
 
 ---
 
@@ -88,7 +108,7 @@
 ### Slide 06: Part 2 Overview
 * **Title:** Part 2 – Fundamental Implementation
 * **Coverage:** R3–R11 (Registration $\to$ Presence $\to$ Private Rooms $\to$ Group Chats & Permissions).
-* **Grading Requirement:** Must be fully completed before Part 3 Special Points can be graded.
+* **Grading Requirement:** Must be fully completed before Part 3 Special Points can be graded (7 Points).
 
 ---
 
@@ -96,14 +116,16 @@
 * **Requirement:** Each client must have a unique name.
 * **Generative AI Prompt:**
   ```text
-  Implement client name validation and uniqueness registration using Pydantic v2 in Python aiohttp:
-  1. Define RegisterCmd model with field_validator ensuring the name contains 1–24 characters, matching [a-zA-Z0-9 ._-] and stripped of whitespace.
-  2. In ChatServer.handle_register, check uniqueness across active UserSession objects using case-insensitive comparison (s.name.casefold() == cmd.name.casefold()).
-  3. If duplicate, raise a ValueError with "That name is already connected. Choose another."
-  4. On success, store the name in session.name and send a welcome JSON payload.
+  Implement unique username registration in Python aiohttp using Pydantic:
+  1. Define RegisterCmd with a field_validator enforcing 1–24 characters matching [a-zA-Z0-9 ._-] and stripped of whitespace.
+  2. In handle_register, check case-insensitive uniqueness against active sessions in memory.
+  3. If unique, bind the name to session.name and respond with a welcome JSON frame.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Pydantic Validation Schema):**
   ```python
+  # server.py: Client Registration Command Schema
+  NAME_PATTERN = re.compile(r"^[\w .-]{1,24}$", re.UNICODE)
+
   class RegisterCmd(BaseModel):
       type: Literal["register"] = "register"
       name: str
@@ -115,19 +137,28 @@
           if not (1 <= len(trimmed) <= 24) or not NAME_PATTERN.fullmatch(trimmed):
               raise ValueError("Use 1–24 letters, numbers, spaces, dots, underscores or hyphens.")
           return trimmed
-
+  ```
+* **Code Snapshot 2 (Right: Registration Handler & Uniqueness Check):**
+  ```python
+  # server.py: Case-Insensitive Uniqueness Check & Session Binding
   async def handle_register(self, session: UserSession, data: dict):
       cmd = RegisterCmd(**data)
+
+      # Enforce case-insensitive uniqueness across active sessions
       if any(s.name.casefold() == cmd.name.casefold() for s in self.sessions.values()):
           raise ValueError("That name is already connected. Choose another.")
+
       session.name = cmd.name
-      await self.send(session, {"type": "welcome", "id": session.id, "name": session.name})
+      await self.send(session, {
+          "type": "welcome", "id": session.id, "name": session.name,
+          "ai_model": AI_MODEL, "max_file": MAX_FILE,
+      })
       await self.broadcast_presence()
   ```
 * **Speaker Notes / Talking Points:**
-  * **Strict Validation:** Names are validated via regex and trimmed before storage.
-  * **Case-Insensitive Equality:** `Alice` and `alice` cannot connect simultaneously.
-  * **Immediate Confirmation:** Server assigns a unique UUID session ID and sends `welcome`.
+  * **Validation Guard:** Names are validated via regex and trimmed before storage.
+  * **Case-Insensitive Uniqueness:** Prevents spoofing where `Alice` and `alice` connect concurrently.
+  * **Session Identity:** Server assigns a UUID session ID and reserves the name for the connection lifetime.
 
 ---
 
@@ -135,45 +166,62 @@
 * **Requirement:** Each client can see a list of names of all clients that are currently connected to the server including its own name.
 * **Generative AI Prompt:**
   ```text
-  Implement real-time presence broadcasting for connected chat clients:
-  1. Create broadcast_presence() in ChatServer that collects all active registered sessions into a list of {"id": s.id, "name": s.name} and current groups.
+  Implement real-time presence broadcasting in ChatServer:
+  1. In broadcast_presence(), collect all active registered sessions into a list of {"id": s.id, "name": s.name} and current groups.
   2. Broadcast a "state" JSON event to all connected sockets concurrently using asyncio.gather.
-  3. Ensure broadcast_presence() triggers both when a user registers and when a user disconnects.
+  3. Ensure presence updates trigger upon both user registration and disconnection.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Presence Broadcast Engine):**
   ```python
+  # server.py: Real-Time Presence Broadcast
   async def broadcast_presence(self):
-      """Broadcast online users and active groups to all connected clients (R4)."""
+      """Broadcast online users and active groups to all clients (R4)."""
       await self.broadcast({
           "type": "state",
-          "users": [{"id": s.id, "name": s.name} for s in self.sessions.values() if s.name],
-          "groups": [self.describe_room(r) for r in self.rooms.values() if r.kind == "group"],
+          "users": [
+              {"id": s.id, "name": s.name}
+              for s in self.sessions.values() if s.name
+          ],
+          "groups": [
+              self.describe_room(r)
+              for r in self.rooms.values() if r.kind == "group"
+          ],
       })
-
+  ```
+* **Code Snapshot 2 (Right: Disconnection Lifecycle Cleanup):**
+  ```python
+  # server.py: Disconnection & Presence Update
   async def disconnect(self, session: UserSession):
-      """Clean up session on disconnect and broadcast updated presence."""
-      if self.sessions.pop(session.id, None) is not None:
-          if session.name:
-              await self.broadcast_presence()
+      """Clean up on disconnect and update presence across all clients."""
+      if self.sessions.pop(session.id, None) is None:
+          return
+
+      for room_id, room in list(self.rooms.items()):
+          if room.kind == "group":
+              room.members.discard(session.id)
+              room.names.pop(session.id, None)
+
+      if session.name:
+          await self.broadcast_presence()
   ```
 * **Speaker Notes / Talking Points:**
-  * **Real-Time Sync:** Whenever a user logs in or closes their tab, all online users receive the updated client list immediately.
-  * **Includes Self:** The current user is explicitly included in the `users` array, enabling the frontend sidebar to display "Online (me)".
+  * **Instant Synchronization:** When any user logs in or closes their browser, all connected users receive the updated client list immediately.
+  * **Self-Inclusive List:** The user array explicitly includes the current user's session, allowing the UI to show "(you)".
 
 ---
 
-### Slide 09: R5 – Independent Chat Rooms (Private & Group)
+### Slide 09: R5 – Dedicated Chat Rooms (Private & Group)
 * **Requirement:** Each chat between clients (both Private and Group message) must have its own chat room.
 * **Generative AI Prompt:**
   ```text
-  Implement 1-on-1 private room management in ChatServer:
-  1. Define OpenPrivateCmd Pydantic model with peer: str.
-  2. In handle_open_private, check if a ChatRoom(kind='private') already exists with members == {session.id, peer.id}.
-  3. If not, instantiate a new ChatRoom with a unique UUID id and register both participant names.
-  4. Concurrently send the "room" metadata payload to both participants using open_room().
+  Implement isolated private chat rooms in ChatServer using Pydantic:
+  1. Define OpenPrivateCmd with peer: str.
+  2. In handle_open_private, search for an existing ChatRoom(kind='private') matching members == {session.id, peer.id}.
+  3. If none exists, instantiate a new ChatRoom with a unique UUID ID and send room metadata to both sockets concurrently.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Private Room Initiation):**
   ```python
+  # server.py: Private Room Opening & Deduplication
   class OpenPrivateCmd(BaseModel):
       type: Literal["open_private"] = "open_private"
       peer: str
@@ -193,45 +241,83 @@
           self.rooms[room.id] = room
       await asyncio.gather(*(self.open_room(s, room) for s in [session, peer]))
   ```
+* **Code Snapshot 2 (Right: Room Delivery & State Serialization):**
+  ```python
+  # server.py: Delivering Room Metadata and History
+  async def open_room(self, session: UserSession, room: ChatRoom):
+      """Deliver room metadata and message history to a client."""
+      await self.send(session, {
+          "type": "room",
+          "room": self.describe_room(room),
+          "messages": list(room.messages),
+      })
+
+  def describe_room(self, room: ChatRoom) -> dict:
+      return {
+          "id": room.id, "kind": room.kind, "name": room.name,
+          "members": [{"id": m, "name": room.names.get(m, "")} for m in sorted(room.members)],
+      }
+  ```
 * **Speaker Notes / Talking Points:**
-  * **Dedicated Room Entity:** Every pair of users gets their own unique `ChatRoom` instance.
-  * **Deduplication:** Clicking a peer multiple times re-opens the existing private room rather than creating duplicates.
-  * **Dual Notification:** Calling `open_room()` for both users ensures both participants' UI switches/updates concurrently.
+  * **Isolated Entities:** Every 1-on-1 participant pair and group chat receives an independent `ChatRoom` instance.
+  * **Deduplication:** Multiple clicks on a user reopen the existing conversation instead of creating duplicates.
 
 ---
 
-### Slide 10: R6 – Chat Box & Chat Window (UI & Message Exchange)
+### Slide 10: R6 – Chat Box & Chat Window (Message Exchange)
 * **Requirement:** Each chat room must include a chat box for sending text messages and a chat window for displaying the sent messages and incoming messages.
 * **Generative AI Prompt:**
   ```text
-  Design the client-side socket message composer and display window:
-  1. Listen for form submit on #composer and send JSON {"type": "message", "room": state.active, "text": text} over the WebSocket.
-  2. Render incoming messages securely using textContent inside #messages container.
-  3. Support Enter to send and Shift+Enter for multiline input.
-  4. Maintain separate message histories and drafts per room in state.rooms.
+  Implement text message processing and bounded memory storage in ChatServer:
+  1. Define MessageCmd validating room: str and text: str (1-4000 chars).
+  2. Implement automatic message ring-buffering in ChatRoom using collections.deque(maxlen=100).
+  3. Append incoming messages and broadcast to active room participants.
   ```
-* **Code Snapshot (for Slide Code Box):**
-  ```javascript
-  // static/app.js: Sending and rendering messages in dedicated chat window
-  $("composer").addEventListener("submit", event => {
-    event.preventDefault();
-    const text = $("message-input").value.trim();
-    if (text && state.active) {
-      send({ type: "message", room: state.active, text });
-      $("message-input").value = "";
-    }
-  });
+* **Code Snapshot 1 (Left: Message Command Validation & Storage Model):**
+  ```python
+  # server.py: Message Command Schema & Automatic Ring Buffer
+  class MessageCmd(BaseModel):
+      type: Literal["message"] = "message"
+      room: str
+      text: str = Field(min_length=1, max_length=4000)
 
-  // Safe DOM rendering with textContent prevents XSS attacks
-  const body = node("div", "message-body");
-  body.textContent = message.text;
-  row.append(avatar, header, body);
-  $("messages").append(row);
+      @field_validator("text")
+      @classmethod
+      def validate_text(cls, value: str) -> str:
+          trimmed = value.strip()
+          if not (1 <= len(trimmed) <= 4000):
+              raise ValueError("Messages must contain 1–4000 characters.")
+          return trimmed
+
+  @dataclass
+  class ChatRoom:
+      id: str
+      kind: Literal["private", "group"]
+      name: str
+      members: set[str]
+      names: dict[str, str] = field(default_factory=dict)
+      messages: deque = field(default_factory=lambda: deque(maxlen=100))
+  ```
+* **Code Snapshot 2 (Right: Message Ingestion & Delivery):**
+  ```python
+  # server.py: Message Recording & Socket Transmission
+  async def handle_message(self, session: UserSession, data: dict):
+      cmd = MessageCmd(**data)
+      room = self.authorized_room(session, cmd.room)
+
+      message = {
+          "id": uuid.uuid4().hex, "room": room.id, "sender": session.id,
+          "name": session.name, "timestamp": time.time(), "kind": "message",
+          "text": cmd.text, "read_by": [], "delivered_by": [],
+      }
+
+      # Automatically keeps newest 100 messages via deque(maxlen=100)
+      room.messages.append(message)
+      await self.broadcast({"type": "message", "message": message}, room.members)
   ```
 * **Speaker Notes / Talking Points:**
-  * **Two-Way Interaction:** Clear visual separation between the `#message-input` composer box and the `#messages` scrollable chat window.
-  * **Security First:** Uses native `textContent` rather than `innerHTML`, ensuring HTML tags or script injection attempts render as harmless plain text.
-  * **Per-Room State:** When switching rooms, previous message history and current message drafts are preserved in client state.
+  * **Memory Safety:** Uses Python `deque(maxlen=100)`—retaining the 100 newest messages automatically without complex manual memory evictions.
+  * **UI Separation:** The browser cleanly renders input in `#composer` and scrollable history in `#messages`.
 
 ---
 
@@ -239,29 +325,43 @@
 * **Requirement:** Each client can send a direct text message to any client in the list. Only the sender and receiver can see the messages.
 * **Generative AI Prompt:**
   ```text
-  Implement direct message delivery with strict privacy isolation in ChatServer:
-  1. Define MessageCmd model validating room: str and text: str (1–4000 chars).
-  2. Implement authorized_room() that raises ValueError if the session is not in room.members.
-  3. Derive sender identity from session.id on the server (never trusting client-supplied sender values).
-  4. Append message to room.messages (deque maxlen=100) and broadcast JSON exclusively to room.members.
+  Implement strict direct message isolation in ChatServer:
+  1. Define authorized_room() guard verifying session.id is strictly inside room.members.
+  2. Stamp sender identity from the authenticated session.id on the server.
+  3. Broadcast message JSON frames exclusively to room.members ({Alice, Bob}).
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Authorization Guard):**
   ```python
+  # server.py: Room Authorization Guard
+  def authorized_room(self, session: UserSession, room_id: str) -> ChatRoom:
+      """Verify room exists and the calling session is an authorized member."""
+      room = self.rooms.get(room_id)
+      if room is None or session.id not in room.members:
+          raise ValueError("Join this room before using it.")
+      return room
+  ```
+* **Code Snapshot 2 (Right: Private Audience Transmission):**
+  ```python
+  # server.py: Server-Derived Identity & Isolated Broadcast
   async def handle_message(self, session: UserSession, data: dict):
       cmd = MessageCmd(**data)
       room = self.authorized_room(session, cmd.room)
+
       message = {
-          "id": uuid.uuid4().hex, "room": room.id, "sender": session.id,
-          "name": session.name, "timestamp": time.time(), "kind": "message",
-          "text": cmd.text, "read_by": [], "delivered_by": [],
+          "id": uuid.uuid4().hex, "room": room.id,
+          "sender": session.id,  # Server-derived sender identity (anti-spoofing)
+          "name": session.name, "timestamp": time.time(),
+          "kind": "message", "text": cmd.text,
+          "read_by": [], "delivered_by": [],
       }
       room.messages.append(message)
+
+      # R7: Delivered strictly to room.members (only sender and receiver)
       await self.broadcast({"type": "message", "message": message}, room.members)
   ```
 * **Speaker Notes / Talking Points:**
-  * **Strict Privacy Isolation:** Messages are broadcast *only* to `room.members` (`{Alice, Bob}`). A third connected client ("Eve") receives zero packets.
-  * **Anti-Spoofing:** Sender ID and sender name are stamped by the server from `session.id` and `session.name`; forged `"sender"` fields in the client payload are completely ignored.
-  * **Automatic Ring Buffer:** `room.messages` uses Python `deque(maxlen=100)`—automatically keeping the 100 newest messages without any complicated byte eviction logic.
+  * **Strict Privacy Isolation:** Messages are broadcast *only* to `room.members`. A third connected client ("Eve") receives zero packets.
+  * **Server-Derived Identity:** Sender ID and name are stamped by the server; forged `"sender"` fields in client payloads are ignored.
 
 ---
 
@@ -269,19 +369,35 @@
 * **Requirement:** Each client can create a chat group(s), which initially includes only themselves as a member.
 * **Generative AI Prompt:**
   ```text
-  Implement chat group creation using Pydantic in ChatServer:
-  1. Define CreateGroupCmd model with name: str (1–40 characters, trimmed).
-  2. In handle_create_group, instantiate ChatRoom(kind='group') with members={session.id} ensuring the creator is the sole initial member.
-  3. Open room for the creator and broadcast updated presence so all clients see the new group.
+  Implement group chat creation in ChatServer:
+  1. Define CreateGroupCmd validating name: str (1-40 characters, trimmed).
+  2. In handle_create_group, instantiate ChatRoom(kind='group') with members={session.id} (ensuring only the creator is a member initially).
+  3. Open room for creator and broadcast updated presence so all clients see the new group.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Group Creation Schema):**
   ```python
+  # server.py: Group Creation Command Schema
   class CreateGroupCmd(BaseModel):
       type: Literal["create_group"] = "create_group"
       name: str = Field(min_length=1, max_length=40)
 
+      @field_validator("name")
+      @classmethod
+      def validate_name(cls, value: str) -> str:
+          trimmed = value.strip()
+          if not (1 <= len(trimmed) <= 40):
+              raise ValueError("Group names must contain 1–40 characters.")
+          return trimmed
+  ```
+* **Code Snapshot 2 (Right: Creator-Only Group Instantiation):**
+  ```python
+  # server.py: Group Instantiation with Creator as Sole Initial Member
   async def handle_create_group(self, session: UserSession, data: dict):
       cmd = CreateGroupCmd(**data)
+      if len(self.rooms) >= 100:
+          raise ValueError("Room limit reached.")
+
+      # Initial membership set contains ONLY the creator's session.id (R8)
       room = ChatRoom(
           id=uuid.uuid4().hex, kind="group", name=cmd.name,
           members={session.id}, names={session.id: session.name}
@@ -292,8 +408,7 @@
   ```
 * **Speaker Notes / Talking Points:**
   * **Creator Only:** The new group's initial membership set is strictly `{session.id}`.
-  * **No Forced Inclusion:** There is no command or mechanism to force other clients into the group upon creation.
-  * **Immediate Sync:** All connected clients immediately see the new group in their sidebar.
+  * **No Forced Additions:** There is no mechanism or command for the creator to auto-add other users without their consent.
 
 ---
 
@@ -301,30 +416,45 @@
 * **Requirement:** Each client can see a list of all existing chat groups (with the member list) created by any client.
 * **Generative AI Prompt:**
   ```text
-  Implement group list and membership discovery in ChatServer:
+  Implement group discovery and member list serialization in ChatServer:
   1. In describe_room(), map room.members to [{"id": mid, "name": room.names[mid]}].
-  2. In broadcast_presence(), include all active groups in the "groups" list of the "state" event.
-  3. On the frontend, display all groups and their current member list in the sidebar navigation.
+  2. In broadcast_presence(), include all active groups in the "groups" field of the "state" event.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Group Metadata Serialization):**
   ```python
+  # server.py: Group & Member List Serialization
   def describe_room(self, room: ChatRoom) -> dict:
+      """Helper to serialize room metadata and member lists for clients."""
       return {
-          "id": room.id, "kind": room.kind, "name": room.name,
-          "members": [{"id": mid, "name": room.names.get(mid, "")}
-                      for mid in sorted(room.members)],
+          "id": room.id,
+          "kind": room.kind,
+          "name": room.name,
+          "members": [
+              {"id": mid, "name": room.names.get(mid, "")}
+              for mid in sorted(room.members)
+          ],
       }
-
+  ```
+* **Code Snapshot 2 (Right: Global Group State Broadcasting):**
+  ```python
+  # server.py: Distributing All Groups and Members
   async def broadcast_presence(self):
+      """Broadcast online users and active groups to all clients (R4, R9)."""
       await self.broadcast({
           "type": "state",
-          "users": [{"id": s.id, "name": s.name} for s in self.sessions.values() if s.name],
-          "groups": [self.describe_room(r) for r in self.rooms.values() if r.kind == "group"],
+          "users": [
+              {"id": s.id, "name": s.name}
+              for s in self.sessions.values() if s.name
+          ],
+          "groups": [
+              self.describe_room(r)
+              for r in self.rooms.values() if r.kind == "group"
+          ],
       })
   ```
 * **Speaker Notes / Talking Points:**
-  * **Full Visibility:** Every client can see all existing groups and who is inside, even before choosing to join.
-  * **Real-Time Group State:** Any group creation or member joining immediately broadcasts fresh group state to everyone.
+  * **Public Visibility:** Every client can see all existing groups and who is inside, even before choosing to join.
+  * **Real-Time Group Sync:** Any group creation or member joining immediately broadcasts fresh group state to everyone.
 
 ---
 
@@ -333,22 +463,29 @@
 * **Generative AI Prompt:**
   ```text
   Implement voluntary group joining in ChatServer:
-  1. Define JoinGroupCmd model validating room: str.
-  2. In handle_join_group, ensure the room exists and kind == 'group'.
-  3. Add session.id to room.members (self-joining action triggered by the user).
-  4. Call open_room() for the joining client and broadcast updated group presence to all clients.
+  1. Define JoinGroupCmd model with room: str.
+  2. In handle_join_group, ensure the target room exists and kind == 'group'.
+  3. Add the calling user's session.id to room.members (self-join action).
+  4. Call open_room() for the joining client and broadcast updated group presence.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Group Join Command Schema):**
   ```python
+  # server.py: Join Group Command Schema
   class JoinGroupCmd(BaseModel):
+      """Validates joining an existing group (R10)."""
       type: Literal["join_group"] = "join_group"
       room: str
-
+  ```
+* **Code Snapshot 2 (Right: Voluntary Self-Join Execution):**
+  ```python
+  # server.py: Voluntary Self-Join Execution
   async def handle_join_group(self, session: UserSession, data: dict):
       cmd = JoinGroupCmd(**data)
       room = self.rooms.get(cmd.room)
       if room is None or room.kind != "group":
           raise ValueError("This group does not exist.")
+
+      # The user adds their own session.id strictly on their own connection
       room.members.add(session.id)
       room.names[session.id] = session.name
       await self.open_room(session, room)
@@ -356,7 +493,7 @@
   ```
 * **Speaker Notes / Talking Points:**
   * **Self-Action Only:** The user must explicitly send a `join_group` command on their own WebSocket connection.
-  * **Instant Access:** Upon joining, `open_room()` delivers the room view and the member list updates for everyone.
+  * **Instant Access:** Upon joining, `open_room()` delivers the room view and updates the member list for all clients.
 
 ---
 
@@ -367,21 +504,33 @@
   Enforce group message authorization and delivery boundaries:
   1. In handle_message, verify session.id in room.members via authorized_room().
   2. Broadcast group text messages strictly to room.members.
-  3. Non-members who attempt to send to the group receive an error and non-members receive zero message frames.
+  3. Reject non-member messages with ValueError and ensure non-members receive zero packets.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Membership Authorization Guard):**
   ```python
+  # server.py: Guarding Group Membership Boundaries
   def authorized_room(self, session: UserSession, room_id: str) -> ChatRoom:
       room = self.rooms.get(room_id)
       if room is None or session.id not in room.members:
           raise ValueError("Join this room before using it.")
       return room
-
+  ```
+* **Code Snapshot 2 (Right: Group-Only Targeted Broadcast):**
+  ```python
+  # server.py: Broadcasting Strictly to Group Members
   async def handle_message(self, session: UserSession, data: dict):
       cmd = MessageCmd(**data)
+      # Rejects non-members who haven't joined yet
       room = self.authorized_room(session, cmd.room)
-      message = { ... }
+
+      message = {
+          "id": uuid.uuid4().hex, "room": room.id, "sender": session.id,
+          "name": session.name, "timestamp": time.time(), "kind": "message",
+          "text": cmd.text, "read_by": [], "delivered_by": [],
+      }
       room.messages.append(message)
+
+      # R11: Delivered strictly to room.members (non-members receive zero packets)
       await self.broadcast({"type": "message", "message": message}, room.members)
   ```
 * **Speaker Notes / Talking Points:**
@@ -414,12 +563,33 @@
   3. Query local Ollama's /api/chat endpoint asynchronously with model 'qwen2.5:0.5b' and system prompt to generate a 3-bullet summary in the conversation language.
   4. Send {"type": "summary", "room": room_id, "text": text} back to the requesting client.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Summarize Command Schema & Transcript Extraction):**
   ```python
+  # server.py: Summarization Command Schema & Ingestion
   class SummarizeCmd(BaseModel):
       type: Literal["summarize"] = "summarize"
       room: str
 
+  async def handle_summarize(self, session: UserSession, data: dict):
+      cmd = SummarizeCmd(**data)
+      room = self.authorized_room(session, cmd.room)
+      if session.summary_task and not session.summary_task.done():
+          raise ValueError("Your summary is still running.")
+
+      transcript = [
+          f"{m['name']}: {m['text']}" for m in room.messages
+          if m.get("kind") == "message" and session.id in room.members
+      ]
+      if not transcript:
+          raise ValueError("Send some text messages before requesting a summary.")
+
+      session.summary_task = asyncio.create_task(
+          self.execute_summarize(session, room.id, transcript[-30:])
+      )
+  ```
+* **Code Snapshot 2 (Right: Local Ollama Async Inference):**
+  ```python
+  # server.py: Local Ollama Model Inference Execution
   async def execute_summarize(self, session: UserSession, room_id: str, transcript: list[str]):
       await self.send(session, {"type": "summary_pending", "room": room_id})
       async with self.ai_lock:
@@ -437,7 +607,7 @@
   ```
 * **Speaker Notes / Talking Points:**
   * **Privacy-Preserving On-Premise AI:** Inference runs directly on our Oracle server via Ollama; no chat data is sent to paid third-party APIs.
-  * **Asynchronous & Non-Blocking:** Summarization runs as a background task (`create_task`) protected by `asyncio.Lock()`, ensuring the chat server remains responsive.
+  * **Non-Blocking Execution:** Runs as an async background task (`create_task`) protected by `asyncio.Lock()`.
 
 ---
 
@@ -450,8 +620,9 @@
   2. In a field_validator, decode the Base64 payload and ensure length is between 1 byte and 256 KiB.
   3. In handle_file, record the message with kind='file' and broadcast strictly to room members.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: File Command Schema & Base64 Validation):**
   ```python
+  # server.py: File Command Schema & Base64 Decoding in Model
   class FileCmd(BaseModel):
       type: Literal["file"] = "file"
       room: str
@@ -459,21 +630,37 @@
       data: str
       file_bytes: int = 0
 
+      @field_validator("filename")
+      @classmethod
+      def validate_filename(cls, value: str) -> str:
+          if not (1 <= len(value) <= 120) or "/" in value or "\\" in value or any(ord(c) < 32 for c in value):
+              raise ValueError("Invalid file name.")
+          return value
+
       @field_validator("data")
       @classmethod
       def validate_data(cls, value: str) -> str:
-          decoded = base64.b64decode(value, validate=True)
+          try:
+              decoded = base64.b64decode(value, validate=True)
+          except (binascii.Error, ValueError):
+              raise ValueError("Invalid file contents.")
           if not (1 <= len(decoded) <= MAX_FILE):
               raise ValueError("Files must contain 1 byte to 256 KiB.")
           return value
-
+  ```
+* **Code Snapshot 2 (Right: File Handling & Room Broadcast):**
+  ```python
+  # server.py: File Recording & WebSocket Broadcast
   async def handle_file(self, session: UserSession, data: dict):
       cmd = FileCmd(**data)
       room = self.authorized_room(session, cmd.room)
+
       message = {
-          "id": uuid.uuid4().hex, "room": room.id, "sender": session.id,
-          "name": session.name, "timestamp": time.time(), "kind": "file",
-          "filename": cmd.filename, "data": cmd.data, "bytes": cmd.file_bytes,
+          "id": uuid.uuid4().hex, "room": room.id,
+          "sender": session.id, "name": session.name,
+          "timestamp": time.time(), "kind": "file",
+          "filename": cmd.filename, "data": cmd.data,
+          "bytes": cmd.file_bytes,
           "read_by": [], "delivered_by": [],
       }
       room.messages.append(message)
@@ -481,8 +668,7 @@
   ```
 * **Speaker Notes / Talking Points:**
   * **Pure Socket Transport:** Files travel strictly inside WebSocket frames as Base64 strings—no `POST /upload` or HTTP multipart forms.
-  * **Validation in Model:** Base64 decoding and file size enforcement (1 byte to 256 KiB) happen automatically in Pydantic.
-  * **Strict Audience Guard:** Only members of the target room can download the file attachment.
+  * **Model Validation:** Decoding and length checks (1 byte to 256 KiB) occur inside Pydantic field validators.
 
 ---
 
@@ -495,13 +681,24 @@
   2. In handle_receipt, find matching messages in room.messages and append session.id to delivered_by or read_by.
   3. Broadcast receipt event {"type": "receipt", "room": room.id, "id": msg_id, "read_by": [...], "delivered_by": [...]} to room members.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Receipt Command Schema):**
   ```python
+  # server.py: Receipt Command Schema
   class ReceiptCmd(BaseModel):
       type: Literal["read", "received"]
       room: str
       ids: list[str] = Field(max_length=100)
 
+      @field_validator("ids")
+      @classmethod
+      def validate_ids(cls, value: list[str]) -> list[str]:
+          if any(not isinstance(i, str) for i in value):
+              raise ValueError("Invalid read receipt.")
+          return value
+  ```
+* **Code Snapshot 2 (Right: Receipt State Updates & Broadcast):**
+  ```python
+  # server.py: Updating Receipt Status Arrays & Broadcasting
   async def handle_receipt(self, session: UserSession, data: dict):
       cmd = ReceiptCmd(**data)
       room = self.authorized_room(session, cmd.room)
@@ -521,7 +718,7 @@
   * **Three-Stage Lifecycle:**
     * *Sent:* Server accepted and retained the message.
     * *Delivered:* Recipient's browser received the WebSocket frame.
-    * *Read:* Recipient focused and viewed the active chat window.
+    * *Read:* Recipient viewed the active chat window.
   * **Targeted Broadcast:** Receipt updates are pushed exclusively to room members.
 
 ---
@@ -534,11 +731,11 @@
   Set up automated cloud deployment for the WebSocket chat backend:
   1. Configure multi-arch Docker build (linux/amd64 and linux/arm64) with GitHub Container Registry (GHCR).
   2. Configure Traefik reverse proxy labels in compose.oracle.yml for automatic Let's Encrypt TLS/SSL termination.
-  3. Create GitHub Actions workflow to run unit tests, publish container images, and deploy over SSH with health check rollback.
+  3. Create GitHub Actions workflow to publish container images and deploy over SSH with health check verification.
   ```
-* **Code Snapshot (for Slide Code Box):**
+* **Code Snapshot 1 (Left: Traefik Reverse Proxy Configuration):**
   ```yaml
-  # compose.oracle.yml: Production Traefik TLS Reverse Proxy configuration
+  # compose.oracle.yml: Production Traefik TLS Reverse Proxy
   services:
     app:
       environment:
@@ -549,25 +746,32 @@
         traefik.http.routers.relay.entrypoints: websecure
         traefik.http.routers.relay.tls: "true"
         traefik.http.routers.relay.tls.certresolver: letsencrypt
-
+  ```
+* **Code Snapshot 2 (Right: GitHub Actions CD Pipeline):**
+  ```yaml
   # .github/workflows/deploy.yml: Continuous Deployment Pipeline
-  - run: python -m unittest discover -s tests -v
   - uses: docker/build-push-action@v4
     with:
+      context: .
       platforms: linux/amd64,linux/arm64
       push: true
       tags: ${{ steps.image.outputs.name }}
+
+  - name: Pull and deploy on Oracle
+    run: |
+      ssh "${opts[@]}" "$target" "bash ~/relay/deploy.sh '$IMAGE'"
+      curl --fail https://relay.161.118.238.148.sslip.io/healthz
   ```
 * **Speaker Notes / Talking Points:**
-  * **Official Rubric Bonus:** The assignment criteria explicitly states: *"Note: Cloud-based deployment is allowed but optional and will be marked as one special point."*
-  * **Production Pipeline:** Every push to `main` executes unit tests, builds multi-arch containers in GHCR, and deploys to Oracle Cloud with automatic rollback on healthcheck failure.
-  * **Secure HTTPS/WSS:** Traefik dynamically acquires and renews Let's Encrypt TLS certificates, allowing students on different physical computers to connect over encrypted WSS from anywhere.
+  * **Official Rubric Bonus:** The assignment criteria explicitly notes: *"Note: Cloud-based deployment is allowed but optional and will be marked as one special point."*
+  * **Automated CI/CD:** Every push to `main` builds a multi-architecture container in GHCR and updates Oracle Cloud over SSH.
+  * **Production TLS:** Traefik dynamically acquires and auto-renews Let's Encrypt certificates for encrypted WSS connections.
 
 ---
 
 ## Slide Preparation Complete (Slides 01 – 20)
-All 20 slides required by the score criteria and presentation template are fully documented with:
-1. Requirements & Descriptions
-2. Generative AI Prompts (Engineering-grade)
-3. Concise Code Snapshots
+All 20 slides strictly conform to the presentation slide template:
+1. Requirements & Titles
+2. Engineering-grade Generative AI Prompts
+3. Two-Box Backend Code Snapshots (Left: Pydantic Schema / Right: Handler Execution)
 4. Speaker Notes & Talking Points
