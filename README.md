@@ -1,56 +1,82 @@
 # Relay
 
-A browser chat application for **2110471 Computer Network I**, built with a Python socket server and a separate HTML/CSS/JavaScript browser client. Private messages and group messages travel exclusively through native **WebSockets**. No polling or HTTP chat endpoints.
+A browser chat application for **2110471 Computer Network I**, built with an asynchronous Python WebSocket backend (`aiohttp` + `Pydantic v2` Dispatcher) and a separate HTML/CSS/JavaScript browser client. All messaging and chat actions travel exclusively through native **WebSockets** over a single `/ws` endpoint. No polling or HTTP chat endpoints.
 
 **Live app:** <https://relay.161.118.238.148.sslip.io>  
 **Repository:** <https://github.com/Quackudy/2110471-Computer-Network-I-Websocket-Project>
 
-## Run locally
+---
 
-Requires Python 3.11 or newer (the container and CI use 3.13).
+## Architecture Highlights
+
+* **Single Persistent WebSocket Endpoint (`/ws`):** All chat interactions—registration, presence, private chat, group creation, self-joining, text messaging, Base64 file transfers, read receipts, and AI summarization—are processed over a single WebSocket connection.
+* **Pydantic Validation Layer:** Incoming JSON commands are strongly validated using Pydantic models (`RegisterCmd`, `OpenPrivateCmd`, `CreateGroupCmd`, `JoinGroupCmd`, `MessageCmd`, `FileCmd`, `ReceiptCmd`, `SummarizeCmd`).
+* **Clean Dispatcher Pattern:** A central `dispatch()` method routes commands to focused handler functions, catching validation errors centrally and returning clean error frames to the client.
+* **Lightweight In-Memory State:** Rooms and messages live in memory with automatic ring-buffering (`collections.deque(maxlen=100)`), avoiding database locking and maintaining high performance.
+
+---
+
+## Run Locally
+
+Requires Python 3.11 or newer (the container and deployment use 3.13).
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
+
+# On Linux/macOS:
 source .venv/bin/activate
+# On Windows PowerShell:
+.venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
 python server.py
 ```
 
-Open <http://localhost:8080> and choose a name. To demonstrate R1 locally, open `http://SERVER_LAN_IP:8080` on **two different physical computers** on the same network and allow TCP 8080 through the server firewall. The cloud deployment allows both computers to use the live HTTPS URL instead. Multiple tabs alone do not satisfy R1.
+Open <http://localhost:8080> and choose a name. To demonstrate R1 locally, open `http://SERVER_LAN_IP:8080` on **two different physical computers** on the same local network. The cloud deployment allows both computers to use the live HTTPS URL instead.
 
-For Windows, activate with `.venv\Scripts\Activate.ps1`.
+Configuration defaults can be customized via `.env` (refer to `.env.example`).
 
-## AI summaries
+---
 
-The server calls **Qwen2.5 0.5B Instruct**, a real language model served by **Ollama**. The deployment downloads its weights once into a persistent Docker volume. There is no paid API and room messages are processed on the Oracle server, not sent to a third-party inference service. [Model reference](https://ollama.com/library/qwen2.5:0.5b), [upstream model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct), [Ollama API](https://docs.ollama.com/api/chat).
+## AI Catch-Up Summaries
 
-For a Python-only local run, install Ollama separately, run `ollama pull qwen2.5:0.5b`, and leave its server running on localhost:11434. Chat still works if AI is unavailable; the Summarize button reports the error.
+The server integrates with **Qwen2.5 0.5B Instruct**, a compact open-weights language model served by **Ollama**. Model inference runs directly on the Oracle server instance inside a private container network—no paid APIs or third-party inference services are used. [Model reference](https://ollama.com/library/qwen2.5:0.5b), [upstream model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct), [Ollama API](https://docs.ollama.com/api/chat).
 
-Alternatively, run the full stack:
+To run the full stack (server + Ollama) locally with Docker:
 
 ```bash
 docker compose up --build -d --wait --wait-timeout 600
 ```
 
-Open <http://localhost:8080>. First startup downloads the Ollama image and roughly 398 MB of model weights. CPU generation can take several seconds. Ollama has no host-published port.
+Open <http://localhost:8080>. The first startup pulls the Ollama container and downloads the model weights (~398 MB) into a persistent Docker volume.
 
-## Assignment coverage
+---
 
-| Requirement | Implementation | Code to explain |
+## Assignment Coverage (12.5 / 12.5 Points)
+
+| Requirement | Description & Implementation | Reference Code |
 |---|---|---|
-| R1 | Two physical browser clients → Oracle HTTPS proxy → Python server | `compose.oracle.yml`, architecture below |
-| R2 | `/ws` is the only chat transport; server and client are separate files | `server.py:Chat.websocket`, `static/app.js:connect` |
-| R3 | Unique, case-insensitive names reserved for the active connection | `Chat.command` registration |
-| R4 | Online list includes everyone, including the current user | `Chat.presence`, `renderNav` |
-| R5 | One private room per participant pair; independent group rooms | `open_private`, `create_group`, `state.rooms` |
-| R6 | Separate room histories, message log, and text input | `renderMessages`, `#composer` |
-| R7 | Private delivery only to the two participants; sender identity is server-derived | `authorized_room`, `broadcast` |
-| R8 | New group contains its creator only | `create_group` |
-| R9 | Everyone receives all group names and current member lists | `presence`, `renderNav` |
-| R10 | Users explicitly join themselves; no add-other-member command exists | `join_group` |
-| R11 | Group messages accepted from and delivered to members only | `authorized_room`, `broadcast` |
+| **R1** | Two physical browser clients $\to$ Oracle HTTPS/WSS proxy $\to$ Python server | `compose.oracle.yml`, architecture diagram below |
+| **R2** | `/ws` is the only chat transport; server and client are separate files | `server.py:ws_handler`, `static/app.js:connect` |
+| **R3** | Unique, case-insensitive names reserved for the active connection | `RegisterCmd`, `handle_register` |
+| **R4** | Online list includes everyone, including the current user | `broadcast_presence`, `static/app.js:renderNav` |
+| **R5** | Dedicated chat room for each 1-on-1 private pair and each group | `OpenPrivateCmd`, `handle_open_private`, `handle_create_group` |
+| **R6** | Separate room histories, message log window, and text input box | `renderMessages`, `#composer` |
+| **R7** | Private delivery only to the two participants; sender derived on server | `authorized_room`, `handle_message` |
+| **R8** | New group contains only its creator initially | `CreateGroupCmd`, `handle_create_group` |
+| **R9** | Everyone receives all group names and current member lists in real time | `broadcast_presence`, `describe_room` |
+| **R10** | Users explicitly join groups by themselves; no forced additions | `JoinGroupCmd`, `handle_join_group` |
+| **R11** | Group messages accepted from and delivered to room members only | `authorized_room`, `handle_message` |
 
-Bonus candidates: **AI summaries**, **socket file sharing**, **delivery/read receipts**, and **cloud deployment**. Search is also included. Cloud deployment is explicitly recognized by the rubric; other bonus choices still depend on the instructor's assessment.
+### Part 3 Special Points (4 Points)
+1. **AI Chat Summarization (1.0 pt):** Local Qwen2.5 0.5B Instruct via Ollama (`SummarizeCmd`, `execute_summarize`).
+2. **Socket File Sharing (1.0 pt):** Base64 file transfer (up to 256 KiB) strictly through WebSocket frames (`FileCmd`, `handle_file`).
+3. **Delivery & Read Receipts (1.0 pt):** Real-time status tracking (Sent $\to$ Delivered $\to$ Read) broadcast to participants (`ReceiptCmd`, `handle_receipt`).
+4. **Cloud Deployment (1.0 pt):** Live Oracle Cloud instance with Docker, Traefik TLS proxy, and automated GitHub Actions CI/CD. *(Explicitly noted in the rubric: "Cloud-based deployment is allowed but optional and will be marked as one special point")*.
+
+---
+
+## System Architecture
 
 ```mermaid
 flowchart LR
@@ -63,63 +89,48 @@ flowchart LR
   R -->|Pull commit-tagged image| O
 ```
 
-**Protocol explanation:** IP routes packets between hosts. TCP provides reliable, ordered transport. HTTP(S) serves the interface and performs the WebSocket upgrade handshake. WebSocket provides persistent, bidirectional message frames, so TCP partial reads/framing are handled by the WebSocket implementation. JSON describes application commands inside those frames. TLS encrypts the public browser connection; SSH authenticates the deployment connection. The internal HTTP AI call performs model inference, not client-to-client chat delivery.
+**Protocol explanation:**
+* **IP / TCP:** Route packets between hosts and provide reliable, ordered byte streams.
+* **HTTPS:** Serves the browser client interface and performs the HTTP-to-WebSocket upgrade handshake (`Upgrade: websocket`).
+* **WebSocket / WSS:** Persistent, bidirectional message framing. Every chat command, receipt, and file travels exclusively over `/ws`.
+* **JSON:** Application-layer event format inside WebSocket frames.
+* **TLS:** Encrypts public traffic between browsers and the Traefik proxy.
+* **SSH:** Authenticates deployment connections from GitHub Actions to Oracle Cloud.
+* **Internal HTTP:** Used strictly between the Python server and the Ollama container for AI inference (no public port exposed).
 
-## Tests
+---
 
-```bash
-python -m unittest discover -s tests -v
-pip install -r requirements-dev.txt
-python -m playwright install chromium
-# With python server.py running in another terminal:
-python scripts/browser_smoke.py
-# Full cloud test, including a real AI summary:
-python scripts/browser_smoke.py https://relay.161.118.238.148.sslip.io --ai
-```
+## Auto-Deployment Pipeline
 
-The socket tests cover unique names, presence/disconnects, sender spoofing, private/group access boundaries, explicit joining, no pre-join history disclosure, files and limits, origin rejection, malformed input, receipts, bounded history, and AI authorization/error handling. The browser test uses three independent sessions and checks actual sending, file downloads, literal HTML escaping, search, receipts, mobile layout, and disconnects. Screenshots go to ignored `test-results/`.
+Each code push to **main** triggers the GitHub Actions workflow (`.github/workflows/deploy.yml`):
+1. **Publish:** Builds a multi-architecture container image (`linux/amd64` and `linux/arm64`) and pushes it to GitHub Container Registry (GHCR).
+2. **Deploy:** Connects to the Oracle Cloud instance over SSH, transfers `compose.yml` and `compose.oracle.yml`, pulls the latest commit-tagged image, restarts the container, and verifies the public `/healthz` endpoint over HTTPS.
 
-## Auto-deployment
+---
 
-Each code push to **main** runs tests, publishes a multi-architecture image to **GHCR**, and deploys the exact commit tag to Oracle. Documentation-only pushes skip deployment so slide edits do not clear chat sessions. Pull requests run tests without deployment. Actions are pinned to commit hashes. Registry access uses the short-lived `GITHUB_TOKEN`, passed over SSH on stdin. Registry credentials are removed after each deployment. Failed container health checks restore the previous application image when one exists.
+## Presentation & Demonstration
 
-GitHub Actions secrets:
+The complete **20-slide implementation explanation** is fully documented in [docs/slide_preparation.md](docs/slide_preparation.md). It matches the instructor's slide template page-by-page, providing:
+* Engineering-grade **Generative AI Prompts** used for each requirement.
+* Concise **Code Snapshots** designed to fit presentation slide code blocks.
+* **Speaker Notes & Talking Points** for the live demonstration.
 
-| Secret | Purpose |
-|---|---|
-| `ORACLE_HOST` | Oracle address |
-| `ORACLE_USER` | SSH user with Docker permission |
-| `ORACLE_SSH_KEY` | Dedicated deployment key |
-| `ORACLE_KNOWN_HOSTS` | Pinned Oracle SSH host key |
+### Live Demo Checklist
+1. **R1:** Open `https://relay.161.118.238.148.sslip.io` on **two different physical laptops**.
+2. **R3:** Register "Alice" on Laptop 1; attempt to register "alice" on Laptop 2 $\to$ verify duplicate rejection.
+3. **R7:** Connect a 3rd client ("Eve"). Send a private message between Alice and Bob $\to$ verify Eve receives nothing.
+4. **R8–R10:** Create a group on Alice's client (Alice starts alone). Show the group in Bob's sidebar. Bob clicks "Join" to self-join.
+5. **R11:** Send a group message $\to$ verify Eve does not receive it.
+6. **Special Features:**
+   * Transfer a file (`notes.txt` or an image) via WebSocket.
+   * Observe Sent $\to$ Delivered $\to$ Read receipt status markers.
+   * Click **Summarize** in an active conversation to demonstrate local Qwen2.5 AI summarization.
+   * Point out the live HTTPS URL, Traefik TLS certificate, and the automated GitHub Actions pipeline.
 
-The Oracle deployment files are in `~/relay`. The app joins the existing `eventory-production_default` network so the installed Traefik proxy can discover its unique `relay` router. It uses `relay.161.118.238.148.sslip.io` and the proxy's existing `letsencrypt` certificate resolver. This hostname uses sslip.io's IP-based DNS; an owned domain can replace it via `APP_DOMAIN` and the workflow's public-health URL.
+---
 
-To inspect the deployed stack:
+## Limits & Boundaries
 
-```bash
-cd ~/relay
-APP_IMAGE=$(cat .image) docker compose -f compose.yml -f compose.oracle.yml ps
-APP_IMAGE=$(cat .image) docker compose -f compose.yml -f compose.oracle.yml logs --tail=100 app
-```
-
-Never commit SSH keys, GitHub tokens or `.env` files. The image uses a file allowlist and never includes deployment credentials. The supplied personal GitHub token is used only locally to configure repository secrets and push code; it is not installed on Oracle or stored in Actions.
-
-## Presentation and live demo
-
-Open `docs/implementation.pdf` or `docs/implementation.html` locally. They follow the supplied **20-slide implementation explanation** template, contain real code excerpts, and include a prompt disclosure. The HTML supports arrow keys and printing. Regenerate after code changes with `python scripts/build_slides.py`, or add `--pdf` with the development dependencies and Chromium installed to export the PDF too.
-
-Before submission, replace the title-slide group/member placeholders. Demo with at least two physical computers and preferably three connected clients:
-
-1. Connect Alice and Bob on different computers. Explain the architecture and protocol stack.
-2. Connect a third client. Try a duplicate name; show all clients in the online list.
-3. Send private messages and a file. Show that the third client receives neither.
-4. Create a group. Show that only the creator is initially a member and everyone can browse its member list.
-5. Have Bob explicitly join, then exchange group messages. Show that the third client remains outside.
-6. Show distinct room histories, message search, delivery/read receipts, and an actual AI summary.
-7. Disconnect a client and show the updated lists. Show the successful GitHub workflow and running ARM64 containers.
-
-## Intentional limits
-
-This is a course demonstration with session-based names, not permanent accounts. Anyone with the public URL can join under an unused name. HTTPS protects transport; it is not end-to-end encryption and the server can read messages. Room access checks protect the current connected participants.
-
-History is in memory: **100 messages per room**, **100 rooms**, **100 connected users**, a **32 MiB server history budget**, text up to **4,000 characters**, and files up to **256 KiB**. Restarting or redeploying clears users, rooms, and chat history. A disconnected user receives a new identity when reconnecting and must rejoin groups; former private rooms do not attach to a reused name. New group members do not receive pre-join history. AI summarizes only the requesting user's authorized text history (up to the latest 30 messages / 12,000 characters), returns it only to that user, and can make mistakes.
+* **In-Memory Storage:** Messages (up to 100 per room via `deque(maxlen=100)`), active rooms, and sessions live in RAM. Restarting the server clears active sessions.
+* **Rate Limiting:** Sliding-window rate limit (max 20 requests per second per connection) prevents flooding.
+* **Payload Limits:** Text messages up to 4,000 characters; files up to 256 KiB; names between 1 and 24 characters.

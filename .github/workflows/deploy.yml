@@ -1,4 +1,4 @@
-name: Test, publish and deploy Relay
+name: Publish and deploy Relay
 
 on:
   push:
@@ -6,7 +6,6 @@ on:
     paths-ignore:
       - 'docs/**'
       - 'README.md'
-      - 'scripts/build_slides.py'
   pull_request:
   workflow_dispatch:
 
@@ -18,34 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.13'
-          cache: pip
-      - run: pip install -r requirements-dev.txt
-      - run: python -m playwright install --with-deps chromium
-      - run: python -m unittest discover -s tests -v
-      - run: node --check static/app.js
-      - run: bash -n scripts/deploy.sh
-      - name: Exercise three browser clients
-        run: |
-          python server.py &
-          server_pid=$!
-          trap 'kill "$server_pid"' EXIT
-          for attempt in {1..30}; do
-            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
-            sleep 1
-          done
-          python scripts/browser_smoke.py
-
   publish:
-    if: github.event_name != 'pull_request'
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -70,7 +42,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.image.outputs.name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

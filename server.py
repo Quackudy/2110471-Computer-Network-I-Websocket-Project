@@ -1,4 +1,8 @@
-"""Socket chat server: all chat commands and deliveries use /ws WebSockets."""
+"""
+Relay Chat Server (Version 2 - Simple & Clean Architecture)
+Single WebSocket Endpoint (/ws) + Pydantic Validation + Simple In-Memory State
+Complete Implementation: R1–R11 + Part 3 Special Points (1–4)
+"""
 
 import asyncio
 import base64
@@ -12,231 +16,411 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable, Literal
 
-from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+from aiohttp import ClientSession as HttpClient, ClientTimeout, WSMsgType, web
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
-STATIC = Path(__file__).parent / "static"
+STATIC_DIR = Path(__file__).parent / "static"
 MAX_FILE = 256 * 1024
-MAX_HISTORY_BYTES = 32 * 1024 * 1024
 AI_MODEL = os.getenv("AI_MODEL", "qwen2.5:0.5b")
 AI_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 NAME_PATTERN = re.compile(r"^[\w .-]{1,24}$", re.UNICODE)
 
 
+# ==============================================================================
+# 1. Pydantic Command Models (Validation)
+# ==============================================================================
+
+class RegisterCmd(BaseModel):
+    """Validates client registration (R3)."""
+    type: Literal["register"] = "register"
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not (1 <= len(trimmed) <= 24) or not NAME_PATTERN.fullmatch(trimmed):
+            raise ValueError("Use 1–24 letters, numbers, spaces, dots, underscores or hyphens.")
+        return trimmed
+
+
+class OpenPrivateCmd(BaseModel):
+    """Validates opening a private 1-on-1 chat (R5)."""
+    type: Literal["open_private"] = "open_private"
+    peer: str
+
+
+class CreateGroupCmd(BaseModel):
+    """Validates creating a chat group (R8)."""
+    type: Literal["create_group"] = "create_group"
+    name: str = Field(min_length=1, max_length=40)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not (1 <= len(trimmed) <= 40):
+            raise ValueError("Group names must contain 1–40 characters.")
+        return trimmed
+
+
+class JoinGroupCmd(BaseModel):
+    """Validates joining an existing group (R10)."""
+    type: Literal["join_group"] = "join_group"
+    room: str
+
+
+class MessageCmd(BaseModel):
+    """Validates sending a text message (R6, R7, R11)."""
+    type: Literal["message"] = "message"
+    room: str
+    text: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not (1 <= len(trimmed) <= 4000):
+            raise ValueError("Messages must contain 1–4000 characters.")
+        return trimmed
+
+
+class FileCmd(BaseModel):
+    """Validates Base64 file payload through WebSocket (Special 2)."""
+    type: Literal["file"] = "file"
+    room: str
+    filename: str
+    data: str
+    file_bytes: int = 0
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        if not (1 <= len(value) <= 120) or "/" in value or "\\" in value or any(ord(c) < 32 for c in value):
+            raise ValueError("Invalid file name.")
+        return value
+
+    @field_validator("data")
+    @classmethod
+    def validate_data(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("Invalid file contents.")
+        if not (1 <= len(decoded) <= MAX_FILE):
+            raise ValueError("Files must contain 1 byte to 256 KiB.")
+        return value
+
+    def model_post_init(self, __context):
+        decoded = base64.b64decode(self.data)
+        self.file_bytes = len(decoded)
+
+
+class ReceiptCmd(BaseModel):
+    """Validates delivery and read receipt status updates (Special 3)."""
+    type: Literal["read", "received"]
+    room: str
+    ids: list[str] = Field(max_length=100)
+
+    @field_validator("ids")
+    @classmethod
+    def validate_ids(cls, value: list[str]) -> list[str]:
+        if any(not isinstance(i, str) for i in value):
+            raise ValueError("Invalid read receipt.")
+        return value
+
+
+class SummarizeCmd(BaseModel):
+    """Validates requesting AI room summary (Special 1)."""
+    type: Literal["summarize"] = "summarize"
+    room: str
+
+
+# ==============================================================================
+# 2. Core Data Models
+# ==============================================================================
+
 @dataclass
-class Client:
+class UserSession:
+    """Represents an active client WebSocket connection."""
     socket: web.WebSocketResponse
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = ""
-    requests: deque = field(default_factory=deque)
+    requests: deque = field(default_factory=deque)  # Sliding-window rate limiter
     summary_task: asyncio.Task | None = None
 
 
 @dataclass
-class Room:
+class ChatRoom:
+    """Represents a private or group chat room."""
     id: str
-    kind: str
+    kind: Literal["private", "group"]
     name: str
-    members: set
-    messages: deque = field(default_factory=deque)
-    names: dict = field(default_factory=dict)
+    members: set[str]  # Stores session.id of participants
+    names: dict[str, str] = field(default_factory=dict)  # session.id -> display name
+    # Automatic ring buffer: keeps only the last 100 messages
+    messages: deque = field(default_factory=lambda: deque(maxlen=100))
 
 
-class Chat:
+# ==============================================================================
+# 3. Central Chat Server & Dispatcher
+# ==============================================================================
+
+class ChatServer:
+    """Central server: routes WebSocket commands and holds in-memory state."""
+
     def __init__(self):
-        self.clients = {}
-        self.rooms = {}
-        self.history_bytes = 0
-        self.sequence = 0
+        self.sessions: dict[str, UserSession] = {}
+        self.rooms: dict[str, ChatRoom] = {}
         self.ai_lock = asyncio.Lock()
-
-    async def send(self, client, event):
-        try:
-            await asyncio.wait_for(client.socket.send_json(event), timeout=5)
-        except (ConnectionError, RuntimeError, asyncio.TimeoutError):
-            # Closing inside a broadcast can otherwise wait on the receiving handler's own broadcast.
-            asyncio.create_task(client.socket.close())
-
-    async def broadcast(self, event, members=None):
-        targets = [c for c in self.clients.values() if members is None or c.id in members]
-        await asyncio.gather(*(self.send(c, event) for c in targets))
-
-    def describe(self, room):
-        return {
-            "id": room.id, "kind": room.kind, "name": room.name,
-            "members": [{"id": member, "name": room.names[member]}
-                        for member in sorted(room.members)],
+        
+        # Dispatcher lookup table
+        self.handlers: dict[str, Callable] = {
+            "register": self.handle_register,
+            "open_private": self.handle_open_private,
+            "create_group": self.handle_create_group,
+            "join_group": self.handle_join_group,
+            "message": self.handle_message,
+            "file": self.handle_file,
+            "read": self.handle_receipt,
+            "received": self.handle_receipt,
+            "summarize": self.handle_summarize,
         }
 
-    async def presence(self):
-        await self.broadcast({
-            "type": "state",
-            "users": [{"id": c.id, "name": c.name} for c in self.clients.values()],
-            "groups": [self.describe(r) for r in self.rooms.values() if r.kind == "group"],
-        })
+    # --------------------------------------------------------------------------
+    # Simple Networking Helpers
+    # --------------------------------------------------------------------------
 
-    @staticmethod
-    def wire_message(message):
-        return {key: value for key, value in message.items()
-                if key not in {"audience", "size", "sequence"}}
+    async def send(self, session: UserSession, event: dict):
+        """Send a JSON event to a client."""
+        try:
+            await session.socket.send_json(event)
+        except Exception:
+            pass
 
-    def authorized_room(self, client, data):
-        room_id = data.get("room")
-        room = self.rooms.get(room_id) if isinstance(room_id, str) else None
-        if room is None or client.id not in room.members:
+    async def broadcast(self, event: dict, members: set[str] | None = None):
+        """Send a JSON event to all clients or an authorized group of members."""
+        targets = [
+            s for s in self.sessions.values()
+            if members is None or s.id in members
+        ]
+        await asyncio.gather(*(self.send(s, event) for s in targets))
+
+    def describe_room(self, room: ChatRoom) -> dict:
+        """Helper to serialize room metadata for clients."""
+        return {
+            "id": room.id,
+            "kind": room.kind,
+            "name": room.name,
+            "members": [
+                {"id": mid, "name": room.names.get(mid, "")}
+                for mid in sorted(room.members)
+            ],
+        }
+
+    def authorized_room(self, session: UserSession, room_id: str) -> ChatRoom:
+        """Check that the room exists and the user is an authorized member."""
+        room = self.rooms.get(room_id)
+        if room is None or session.id not in room.members:
             raise ValueError("Join this room before using it.")
         return room
 
-    async def open_room(self, client, room):
-        await self.send(client, {
-            "type": "room", "room": self.describe(room),
-            "messages": [self.wire_message(m) for m in room.messages if client.id in m["audience"]],
+    async def open_room(self, session: UserSession, room: ChatRoom):
+        """Deliver room metadata and message history to a client."""
+        await self.send(session, {
+            "type": "room",
+            "room": self.describe_room(room),
+            "messages": list(room.messages),
         })
 
-    def retain(self, room, message):
-        self.sequence += 1
-        message["sequence"] = self.sequence
-        message["size"] = len(json.dumps(self.wire_message(message)).encode())
-        if len(room.messages) >= 100:
-            self.history_bytes -= room.messages.popleft()["size"]
-        room.messages.append(message)
-        self.history_bytes += message["size"]
-        # shortcut: history lives in bounded memory; add storage when restart recovery is required.
-        while self.history_bytes > MAX_HISTORY_BYTES:
-            oldest = min((r for r in self.rooms.values() if r.messages),
-                         key=lambda r: r.messages[0]["sequence"])
-            self.history_bytes -= oldest.messages.popleft()["size"]
+    async def broadcast_presence(self):
+        """Broadcast online users and active groups to all clients (R4, R9)."""
+        await self.broadcast({
+            "type": "state",
+            "users": [{"id": s.id, "name": s.name} for s in self.sessions.values() if s.name],
+            "groups": [self.describe_room(r) for r in self.rooms.values() if r.kind == "group"],
+        })
 
-    async def command(self, client, data):
-        if not isinstance(data, dict) or not isinstance(data.get("type"), str):
-            raise ValueError("Send a JSON object with a command type.")
-        now = time.monotonic()
-        while client.requests and client.requests[0] < now - 1:
-            client.requests.popleft()
-        if len(client.requests) >= 20:
-            raise ValueError("Too many requests. Please slow down.")
-        client.requests.append(now)
-        action = data["type"]
+    # --------------------------------------------------------------------------
+    # Handlers (R3–R11)
+    # --------------------------------------------------------------------------
 
-        if not client.name:
-            if action != "register":
-                raise ValueError("Choose a name first.")
-            name = data.get("name")
-            if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name.strip()):
-                raise ValueError("Use 1–24 letters, numbers, spaces, dots, underscores or hyphens.")
-            name = name.strip()
-            if any(c.name.casefold() == name.casefold() for c in self.clients.values()):
-                raise ValueError("That name is already connected. Choose another.")
-            if len(self.clients) >= 100:
-                raise ValueError("The server is full. Try again later.")
-            client.name = name
-            self.clients[client.id] = client
-            await self.send(client, {"type": "welcome", "id": client.id, "name": name,
-                                     "ai_model": AI_MODEL, "max_file": MAX_FILE})
-            await self.presence()
-            return
+    async def handle_register(self, session: UserSession, data: dict):
+        """R3: Register unique username (case-insensitive)."""
+        cmd = RegisterCmd(**data)
 
-        if action == "open_private":
-            peer_id = data.get("peer")
-            peer = self.clients.get(peer_id) if isinstance(peer_id, str) else None
-            if peer is None or peer.id == client.id:
-                raise ValueError("Choose another online user.")
-            members = {client.id, peer.id}
-            room = next((r for r in self.rooms.values()
-                         if r.kind == "private" and r.members == members), None)
-            if room is None:
-                if len(self.rooms) >= 100:
-                    raise ValueError("Room limit reached.")
-                room = Room(uuid.uuid4().hex, "private", "Private conversation", members,
-                            names={c.id: c.name for c in [client, peer]})
-                self.rooms[room.id] = room
-            await asyncio.gather(*(self.open_room(c, room) for c in [client, peer]))
-        elif action == "create_group":
-            name = data.get("name")
-            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 40:
-                raise ValueError("Group names must contain 1–40 characters.")
+        if any(s.name.casefold() == cmd.name.casefold() for s in self.sessions.values()):
+            raise ValueError("That name is already connected. Choose another.")
+
+        if len(self.sessions) >= 100:
+            raise ValueError("The server is full. Try again later.")
+
+        session.name = cmd.name
+        await self.send(session, {
+            "type": "welcome",
+            "id": session.id,
+            "name": session.name,
+            "ai_model": AI_MODEL,
+            "max_file": MAX_FILE,
+        })
+        await self.broadcast_presence()
+
+    async def handle_open_private(self, session: UserSession, data: dict):
+        """R5: Open or create an isolated 1-on-1 private room for two clients."""
+        cmd = OpenPrivateCmd(**data)
+        peer = self.sessions.get(cmd.peer)
+        if peer is None or peer.id == session.id:
+            raise ValueError("Choose another online user.")
+
+        members = {session.id, peer.id}
+        room = next((r for r in self.rooms.values()
+                     if r.kind == "private" and r.members == members), None)
+        if room is None:
             if len(self.rooms) >= 100:
                 raise ValueError("Room limit reached.")
-            room = Room(uuid.uuid4().hex, "group", name.strip(), {client.id},
-                        names={client.id: client.name})
+            room = ChatRoom(
+                id=uuid.uuid4().hex,
+                kind="private",
+                name="Private conversation",
+                members=members,
+                names={s.id: s.name for s in [session, peer]}
+            )
             self.rooms[room.id] = room
-            await self.open_room(client, room)
-            await self.presence()
-        elif action == "join_group":
-            room_id = data.get("room")
-            room = self.rooms.get(room_id) if isinstance(room_id, str) else None
-            if room is None or room.kind != "group":
-                raise ValueError("This group does not exist.")
-            room.members.add(client.id)
-            room.names[client.id] = client.name
-            await self.open_room(client, room)
-            await self.presence()
-        elif action in {"message", "file"}:
-            room = self.authorized_room(client, data)
-            if room.kind == "private" and not room.members <= self.clients.keys():
-                raise ValueError("This user disconnected. Open a new chat when they return.")
-            message = {
-                "id": uuid.uuid4().hex, "room": room.id, "sender": client.id,
-                "name": client.name, "timestamp": time.time(), "kind": action,
-                "audience": set(room.members), "read_by": [], "delivered_by": [],
-            }
-            if action == "message":
-                text = data.get("text")
-                if not isinstance(text, str) or not 1 <= len(text.strip()) <= 4000:
-                    raise ValueError("Messages must contain 1–4000 characters.")
-                message["text"] = text.strip()
-            else:
-                filename, content = data.get("filename"), data.get("data")
-                if not isinstance(filename, str) or not 1 <= len(filename) <= 120:
-                    raise ValueError("Invalid file name.")
-                if "/" in filename or "\\" in filename or any(ord(c) < 32 for c in filename):
-                    raise ValueError("Invalid file name.")
-                if not isinstance(content, str) or len(content) > 4 * ((MAX_FILE + 2) // 3):
-                    raise ValueError("Files must be at most 256 KiB.")
-                try:
-                    decoded = base64.b64decode(content, validate=True)
-                except (binascii.Error, ValueError):
-                    raise ValueError("Invalid file contents.") from None
-                if not 1 <= len(decoded) <= MAX_FILE:
-                    raise ValueError("Files must contain 1 byte to 256 KiB.")
-                message.update(filename=filename, data=content, bytes=len(decoded))
-            self.retain(room, message)
-            await self.broadcast({"type": "message", "message": self.wire_message(message)}, room.members)
-        elif action in {"read", "received"}:
-            room = self.authorized_room(client, data)
-            ids = data.get("ids")
-            if not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(i, str) for i in ids):
-                raise ValueError("Invalid read receipt.")
-            receipt_field = "read_by" if action == "read" else "delivered_by"
-            for message in room.messages:
-                if (message["id"] in ids and client.id in message["audience"]
-                        and client.id != message["sender"] and client.id not in message[receipt_field]):
-                    message[receipt_field].append(client.id)
-                    await self.broadcast({"type": "receipt", "room": room.id,
-                                          "id": message["id"], "read_by": message["read_by"],
-                                          "delivered_by": message["delivered_by"]},
-                                         message["audience"] & room.members)
-        elif action == "summarize":
-            room = self.authorized_room(client, data)
-            if client.summary_task and not client.summary_task.done():
-                raise ValueError("Your summary is still running.")
-            if self.ai_lock.locked():
-                raise ValueError("AI is busy. Try again shortly.")
-            transcript = [f'{m["name"]}: {m["text"]}' for m in room.messages
-                          if m["kind"] == "message" and client.id in m["audience"]]
-            if not transcript:
-                raise ValueError("Send some text messages before requesting a summary.")
-            client.summary_task = asyncio.create_task(self.summarize(client, room.id, transcript[-30:]))
-        else:
-            raise ValueError("Unknown command.")
 
-    async def summarize(self, client, room_id, transcript):
-        await self.send(client, {"type": "summary_pending", "room": room_id})
+        await asyncio.gather(*(self.open_room(s, room) for s in [session, peer]))
+
+    async def handle_create_group(self, session: UserSession, data: dict):
+        """R8: Create a chat group with only the creator as member."""
+        cmd = CreateGroupCmd(**data)
+        if len(self.rooms) >= 100:
+            raise ValueError("Room limit reached.")
+
+        room = ChatRoom(
+            id=uuid.uuid4().hex,
+            kind="group",
+            name=cmd.name,
+            members={session.id},
+            names={session.id: session.name}
+        )
+        self.rooms[room.id] = room
+        await self.open_room(session, room)
+        await self.broadcast_presence()  # R9: everyone sees new group and members
+
+    async def handle_join_group(self, session: UserSession, data: dict):
+        """R10: Voluntary self-join group chat."""
+        cmd = JoinGroupCmd(**data)
+        room = self.rooms.get(cmd.room)
+        if room is None or room.kind != "group":
+            raise ValueError("This group does not exist.")
+
+        room.members.add(session.id)
+        room.names[session.id] = session.name
+        await self.open_room(session, room)
+        await self.broadcast_presence()  # R9: updated member list broadcast
+
+    async def handle_message(self, session: UserSession, data: dict):
+        """R7 & R11: Send text message strictly to room members."""
+        cmd = MessageCmd(**data)
+        room = self.authorized_room(session, cmd.room)
+        
+        if room.kind == "private" and not room.members <= self.sessions.keys():
+            raise ValueError("This user disconnected. Open a new chat when they return.")
+
+        message = {
+            "id": uuid.uuid4().hex,
+            "room": room.id,
+            "sender": session.id,
+            "name": session.name,
+            "timestamp": time.time(),
+            "kind": "message",
+            "text": cmd.text,
+            "read_by": [],
+            "delivered_by": [],
+        }
+
+        room.messages.append(message)
+        await self.broadcast({"type": "message", "message": message}, room.members)
+
+    # --------------------------------------------------------------------------
+    # Handlers (Part 3 Special Points 1–3)
+    # --------------------------------------------------------------------------
+
+    async def handle_file(self, session: UserSession, data: dict):
+        """Special 2: Transfer file as Base64 payload over WebSocket."""
+        cmd = FileCmd(**data)
+        room = self.authorized_room(session, cmd.room)
+        
+        if room.kind == "private" and not room.members <= self.sessions.keys():
+            raise ValueError("This user disconnected. Open a new chat when they return.")
+
+        message = {
+            "id": uuid.uuid4().hex,
+            "room": room.id,
+            "sender": session.id,
+            "name": session.name,
+            "timestamp": time.time(),
+            "kind": "file",
+            "filename": cmd.filename,
+            "data": cmd.data,
+            "bytes": cmd.file_bytes,
+            "read_by": [],
+            "delivered_by": [],
+        }
+
+        room.messages.append(message)
+        await self.broadcast({"type": "message", "message": message}, room.members)
+
+    async def handle_receipt(self, session: UserSession, data: dict):
+        """Special 3: Update delivery and read receipts for room messages."""
+        cmd = ReceiptCmd(**data)
+        room = self.authorized_room(session, cmd.room)
+        receipt_field = "read_by" if cmd.type == "read" else "delivered_by"
+
+        for message in room.messages:
+            if (message["id"] in cmd.ids and session.id in room.members
+                    and session.id != message["sender"]
+                    and session.id not in message[receipt_field]):
+                message[receipt_field].append(session.id)
+                await self.broadcast({
+                    "type": "receipt",
+                    "room": room.id,
+                    "id": message["id"],
+                    "read_by": message["read_by"],
+                    "delivered_by": message["delivered_by"],
+                }, room.members)
+
+    async def handle_summarize(self, session: UserSession, data: dict):
+        """Special 1: Request local AI conversation summary via Ollama."""
+        cmd = SummarizeCmd(**data)
+        room = self.authorized_room(session, cmd.room)
+
+        if session.summary_task and not session.summary_task.done():
+            raise ValueError("Your summary is still running.")
+        if self.ai_lock.locked():
+            raise ValueError("AI is busy. Try again shortly.")
+
+        transcript = [
+            f"{m['name']}: {m['text']}" for m in room.messages
+            if m.get("kind") == "message" and session.id in room.members
+        ]
+        if not transcript:
+            raise ValueError("Send some text messages before requesting a summary.")
+
+        session.summary_task = asyncio.create_task(
+            self.execute_summarize(session, room.id, transcript[-30:])
+        )
+
+    async def execute_summarize(self, session: UserSession, room_id: str, transcript: list[str]):
+        """Execute async HTTP query to local Ollama inference server."""
+        await self.send(session, {"type": "summary_pending", "room": room_id})
         try:
             async with self.ai_lock:
-                async with ClientSession(timeout=ClientTimeout(total=120)) as session:
-                    async with session.post(AI_URL + "/api/chat", json={
-                        "model": AI_MODEL, "stream": False,
+                async with HttpClient(timeout=ClientTimeout(total=120)) as http_client:
+                    async with http_client.post(f"{AI_URL}/api/chat", json={
+                        "model": AI_MODEL,
+                        "stream": False,
                         "messages": [
                             {"role": "system", "content": "Summarize the provided chat in 3 brief bullet points. "
                              "Include decisions and tasks only if stated. Do not invent facts. "
@@ -249,112 +433,129 @@ class Chat:
                         if response.status != 200:
                             raise ValueError("AI model is unavailable. Ask the administrator to check Ollama.")
                         result = await response.json()
+
             text = result.get("message", {}).get("content", "").strip()
             if not text:
                 raise ValueError("The model returned no summary. Try again.")
-            await self.send(client, {"type": "summary", "room": room_id, "text": text[:6000],
-                                     "model": AI_MODEL})
+            await self.send(session, {"type": "summary", "room": room_id, "text": text[:6000], "model": AI_MODEL})
         except (ValueError, TimeoutError, OSError) as error:
-            await self.send(client, {"type": "summary_error", "room": room_id,
+            await self.send(session, {"type": "summary_error", "room": room_id,
                                      "message": str(error) if isinstance(error, ValueError)
                                      else "AI is unavailable or timed out. Please try again."})
         except Exception:
-            logging.exception("AI request failed")
-            await self.send(client, {"type": "summary_error", "room": room_id,
+            logging.exception("AI summary failed")
+            await self.send(session, {"type": "summary_error", "room": room_id,
                                      "message": "AI is unavailable. Please try again."})
 
-    async def disconnect(self, client):
-        if client.summary_task and not client.summary_task.done():
-            client.summary_task.cancel()
-            await asyncio.gather(client.summary_task, return_exceptions=True)
-        if self.clients.pop(client.id, None) is None:
+    # --------------------------------------------------------------------------
+    # Central Dispatcher Loop
+    # --------------------------------------------------------------------------
+
+    async def dispatch(self, session: UserSession, raw_text: str):
+        """Central entry point: rate-limit, parse JSON, validate, and route."""
+        try:
+            # 1. Rate limiter (max 20 req/sec)
+            now = time.monotonic()
+            while session.requests and session.requests[0] < now - 1.0:
+                session.requests.popleft()
+            if len(session.requests) >= 20:
+                raise ValueError("Too many requests. Please slow down.")
+            session.requests.append(now)
+
+            # 2. Parse JSON
+            data = json.loads(raw_text)
+            if not isinstance(data, dict):
+                raise ValueError("Payload must be a JSON object.")
+
+            action = data.get("type")
+            if not isinstance(action, str):
+                raise ValueError("Send a JSON object with a command type.")
+
+            # 3. Must register first
+            if not session.name and action != "register":
+                raise ValueError("Choose a name first.")
+
+            # 4. Route to handler
+            handler = self.handlers.get(action)
+            if not handler:
+                raise ValueError("Unknown command.")
+
+            await handler(session, data)
+
+        except (ValidationError, ValueError) as err:
+            msg = err.errors()[0]["msg"].removeprefix("Value error, ") if isinstance(err, ValidationError) else str(err)
+            await self.send(session, {"type": "error", "message": msg})
+
+    async def disconnect(self, session: UserSession):
+        """Clean up on disconnect and update presence."""
+        if session.summary_task and not session.summary_task.done():
+            session.summary_task.cancel()
+
+        if self.sessions.pop(session.id, None) is None:
             return
+
         for room_id, room in list(self.rooms.items()):
             if room.kind == "group":
-                room.members.discard(client.id)
-                room.names.pop(client.id, None)
-            # Private rooms retain their participant IDs until both participants disconnect.
-            if room.kind == "private" and not room.members & self.clients.keys():
-                self.history_bytes -= sum(m["size"] for m in room.messages)
+                room.members.discard(session.id)
+                room.names.pop(session.id, None)
+            if room.kind == "private" and not room.members & self.sessions.keys():
                 del self.rooms[room_id]
-        await self.presence()
 
-    async def websocket(self, request):
-        origin = request.headers.get("Origin")
-        allowed_origin = os.getenv("PUBLIC_ORIGIN")
-        if origin and origin != (allowed_origin or f"{request.scheme}://{request.host}"):
-            raise web.HTTPForbidden(text="Origin is not allowed")
-        socket = web.WebSocketResponse(heartbeat=30, max_msg_size=400_000)
-        await socket.prepare(request)
-        client = Client(socket)
-        try:
-            # An idle unregistered connection must not live forever.
-            async with asyncio.timeout(20):
-                while not client.name:
-                    message = await socket.receive()
-                    if message.type != WSMsgType.TEXT:
-                        return socket
-                    try:
-                        await self.command(client, json.loads(message.data))
-                    except (ValueError, TypeError) as error:
-                        await self.send(client, {"type": "error", "message": str(error)})
-            async for message in socket:
-                if message.type == WSMsgType.TEXT:
-                    try:
-                        await self.command(client, json.loads(message.data))
-                    except (ValueError, TypeError) as error:
-                        await self.send(client, {"type": "error", "message": str(error)})
-                elif message.type == WSMsgType.ERROR:
-                    break
-        except TimeoutError:
-            await socket.close(code=1008, message=b"Registration timed out")
-        finally:
-            # Transport cancellation must not interrupt removal and the offline broadcast.
-            await asyncio.shield(self.disconnect(client))
-        return socket
+        if session.name:
+            await self.broadcast_presence()
 
 
-@web.middleware
-async def security_headers(request, handler):
-    response = await handler(request)
-    response.headers.update({
-        "X-Content-Type-Options": "nosniff",
-        "Referrer-Policy": "same-origin",
-        "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
-        "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-    })
-    return response
+# ==============================================================================
+# 4. HTTP & WebSocket Transport Layer (R2)
+# ==============================================================================
+
+async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+    """Single persistent WebSocket endpoint (/ws) for all chat interactions."""
+    server: ChatServer = request.app["chat_server"]
+    socket = web.WebSocketResponse(heartbeat=30.0, max_msg_size=400_000)
+    await socket.prepare(request)
+
+    session = UserSession(socket=socket)
+    server.sessions[session.id] = session
+
+    try:
+        async for msg in socket:
+            if msg.type == WSMsgType.TEXT:
+                await server.dispatch(session, msg.data)
+            elif msg.type == WSMsgType.ERROR:
+                break
+    finally:
+        await server.disconnect(session)
+
+    return socket
 
 
-CHAT_KEY = web.AppKey("chat", Chat)
+def create_app() -> web.Application:
+    """Create the aiohttp application with static routes and /ws socket endpoint."""
+    server = ChatServer()
+    app = web.Application()
+    app["chat_server"] = server
 
+    app.router.add_get("/ws", ws_handler)
 
-def create_app():
-    chat = Chat()
-    app = web.Application(middlewares=[security_headers])
-    app[CHAT_KEY] = chat
-    app.router.add_get("/ws", chat.websocket)
     async def health(request):
         return web.json_response({"status": "ok"})
 
-    async def static_file(request):
+    async def serve_static(request):
         filename = request.match_info.get("filename", "index.html")
-        if filename not in {"index.html", "app.js", "style.css", "favicon.svg"}:
+        file_path = STATIC_DIR / filename
+        if not file_path.exists():
             raise web.HTTPNotFound()
-        return web.FileResponse(STATIC / filename)
+        return web.FileResponse(file_path)
 
     app.router.add_get("/healthz", health)
-    app.router.add_get("/", static_file)
-    app.router.add_get("/{filename}", static_file)
+    app.router.add_get("/", serve_static)
+    app.router.add_get("/{filename}", serve_static)
 
-    async def shutdown(app):
-        await asyncio.gather(*(c.socket.close(code=1001, message=b"Server restarting")
-                               for c in list(chat.clients.values())))
-
-    app.on_shutdown.append(shutdown)
     return app
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    web.run_app(create_app(), host="0.0.0.0", port=int(os.getenv("PORT", "8080")), access_log=None)
+    app = create_app()
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
