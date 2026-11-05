@@ -83,4 +83,83 @@
 
 ---
 
-*(Slides R3 through Special 4 will be populated progressively in the next steps)*
+## Part 2: Fundamental Implementation (7 Points)
+
+### Slide 06: Part 2 Overview
+* **Title:** Part 2 – Fundamental Implementation
+* **Coverage:** R3–R11 (Registration $\to$ Presence $\to$ Private Rooms $\to$ Group Chats & Permissions).
+* **Grading Requirement:** Must be fully completed before Part 3 Special Points can be graded.
+
+---
+
+### Slide 07: R3 – Unique Client Names
+* **Requirement:** Each client must have a unique name.
+* **Generative AI Prompt:**
+  ```text
+  Implement client name validation and uniqueness registration using Pydantic v2 in Python aiohttp:
+  1. Define RegisterCmd model with field_validator ensuring the name contains 1–24 characters, matching [a-zA-Z0-9 ._-] and stripped of whitespace.
+  2. In ChatServer.handle_register, check uniqueness across active UserSession objects using case-insensitive comparison (s.name.casefold() == cmd.name.casefold()).
+  3. If duplicate, raise a ValueError with "That name is already connected. Choose another."
+  4. On success, store the name in session.name and send a welcome JSON payload.
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  class RegisterCmd(BaseModel):
+      type: Literal["register"] = "register"
+      name: str
+
+      @field_validator("name")
+      @classmethod
+      def validate_name(cls, value: str) -> str:
+          trimmed = value.strip()
+          if not (1 <= len(trimmed) <= 24) or not NAME_PATTERN.fullmatch(trimmed):
+              raise ValueError("Use 1–24 letters, numbers, spaces, dots, underscores or hyphens.")
+          return trimmed
+
+  async def handle_register(self, session: UserSession, data: dict):
+      cmd = RegisterCmd(**data)
+      if any(s.name.casefold() == cmd.name.casefold() for s in self.sessions.values()):
+          raise ValueError("That name is already connected. Choose another.")
+      session.name = cmd.name
+      await self.send(session, {"type": "welcome", "id": session.id, "name": session.name})
+      await self.broadcast_presence()
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Strict Validation:** Names are validated via regex and trimmed before storage.
+  * **Case-Insensitive Equality:** `Alice` and `alice` cannot connect simultaneously.
+  * **Immediate Confirmation:** Server assigns a unique UUID session ID and sends `welcome`.
+
+---
+
+### Slide 08: R4 – Connected Clients List (Presence)
+* **Requirement:** Each client can see a list of names of all clients that are currently connected to the server including its own name.
+* **Generative AI Prompt:**
+  ```text
+  Implement real-time presence broadcasting for connected chat clients:
+  1. Create broadcast_presence() in ChatServer that collects all active registered sessions into a list of {"id": s.id, "name": s.name} and current groups.
+  2. Broadcast a "state" JSON event to all connected sockets concurrently using asyncio.gather.
+  3. Ensure broadcast_presence() triggers both when a user registers and when a user disconnects.
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  async def broadcast_presence(self):
+      """Broadcast online users and active groups to all connected clients (R4)."""
+      await self.broadcast({
+          "type": "state",
+          "users": [{"id": s.id, "name": s.name} for s in self.sessions.values() if s.name],
+          "groups": [self.describe_room(r) for r in self.rooms.values() if r.kind == "group"],
+      })
+
+  async def disconnect(self, session: UserSession):
+      """Clean up session on disconnect and broadcast updated presence."""
+      if self.sessions.pop(session.id, None) is not None:
+          if session.name:
+              await self.broadcast_presence()
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Real-Time Sync:** Whenever a user logs in or closes their tab, all online users receive the updated client list immediately.
+  * **Includes Self:** The current user is explicitly included in the `users` array, enabling the frontend sidebar to display "Online (me)".
+
+---
+
+*(Slides R5 through Special 4 will be populated in the next steps)*
