@@ -1,6 +1,7 @@
 """
 Relay Chat Server (Version 2 - Simple & Clean Architecture)
 Single WebSocket Endpoint (/ws) + Pydantic Validation + Simple In-Memory State
+Step 4: Group Chat Creation (R8), Group Presence (R9), Voluntary Join (R10), and Members-Only Routing (R11)
 """
 
 import asyncio
@@ -48,8 +49,28 @@ class OpenPrivateCmd(BaseModel):
     peer: str
 
 
+class CreateGroupCmd(BaseModel):
+    """Validates creating a chat group (R8)."""
+    type: Literal["create_group"] = "create_group"
+    name: str = Field(min_length=1, max_length=40)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not (1 <= len(trimmed) <= 40):
+            raise ValueError("Group names must contain 1–40 characters.")
+        return trimmed
+
+
+class JoinGroupCmd(BaseModel):
+    """Validates joining an existing group (R10)."""
+    type: Literal["join_group"] = "join_group"
+    room: str
+
+
 class MessageCmd(BaseModel):
-    """Validates sending a text message (R6, R7)."""
+    """Validates sending a text message (R6, R7, R11)."""
     type: Literal["message"] = "message"
     room: str
     text: str = Field(min_length=1, max_length=4000)
@@ -103,6 +124,8 @@ class ChatServer:
         self.handlers: dict[str, Callable] = {
             "register": self.handle_register,
             "open_private": self.handle_open_private,
+            "create_group": self.handle_create_group,
+            "join_group": self.handle_join_group,
             "message": self.handle_message,
         }
 
@@ -153,7 +176,7 @@ class ChatServer:
         })
 
     async def broadcast_presence(self):
-        """Broadcast online users and active groups to all clients (R4)."""
+        """Broadcast online users and active groups to all clients (R4, R9)."""
         await self.broadcast({
             "type": "state",
             "users": [{"id": s.id, "name": s.name} for s in self.sessions.values() if s.name],
@@ -161,7 +184,7 @@ class ChatServer:
         })
 
     # --------------------------------------------------------------------------
-    # Handlers (10-15 lines each, simple & focused)
+    # Handlers (Clean & Simple)
     # --------------------------------------------------------------------------
 
     async def handle_register(self, session: UserSession, data: dict):
@@ -208,8 +231,37 @@ class ChatServer:
 
         await asyncio.gather(*(self.open_room(s, room) for s in [session, peer]))
 
+    async def handle_create_group(self, session: UserSession, data: dict):
+        """R8: Create a chat group with only the creator as member."""
+        cmd = CreateGroupCmd(**data)
+        if len(self.rooms) >= 100:
+            raise ValueError("Room limit reached.")
+
+        room = ChatRoom(
+            id=uuid.uuid4().hex,
+            kind="group",
+            name=cmd.name,
+            members={session.id},
+            names={session.id: session.name}
+        )
+        self.rooms[room.id] = room
+        await self.open_room(session, room)
+        await self.broadcast_presence()  # R9: everyone sees new group and members
+
+    async def handle_join_group(self, session: UserSession, data: dict):
+        """R10: Voluntary self-join group chat."""
+        cmd = JoinGroupCmd(**data)
+        room = self.rooms.get(cmd.room)
+        if room is None or room.kind != "group":
+            raise ValueError("This group does not exist.")
+
+        room.members.add(session.id)
+        room.names[session.id] = session.name
+        await self.open_room(session, room)
+        await self.broadcast_presence()  # R9: updated member list broadcast
+
     async def handle_message(self, session: UserSession, data: dict):
-        """R7: Send text message strictly to room members."""
+        """R7 & R11: Send text message strictly to room members."""
         cmd = MessageCmd(**data)
         room = self.authorized_room(session, cmd.room)
         
@@ -228,10 +280,8 @@ class ChatServer:
             "delivered_by": [],
         }
 
-        # Automatically stored in deque(maxlen=100)
         room.messages.append(message)
-
-        # Broadcast strictly to members (Alice & Bob only)
+        # Broadcast strictly to room members (R7 private pair / R11 group members)
         await self.broadcast({"type": "message", "message": message}, room.members)
 
     # --------------------------------------------------------------------------
@@ -282,7 +332,6 @@ class ChatServer:
             if room.kind == "group":
                 room.members.discard(session.id)
                 room.names.pop(session.id, None)
-            # Private rooms are cleaned when both users leave
             if room.kind == "private" and not room.members & self.sessions.keys():
                 del self.rooms[room_id]
 

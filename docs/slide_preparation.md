@@ -265,4 +265,129 @@
 
 ---
 
-*(Slides R8 through Special 4 will be populated in the next steps)*
+### Slide 12: R8 – Group Creation (Creator Starts Alone)
+* **Requirement:** Each client can create a chat group(s), which initially includes only themselves as a member.
+* **Generative AI Prompt:**
+  ```text
+  Implement chat group creation using Pydantic in ChatServer:
+  1. Define CreateGroupCmd model with name: str (1–40 characters, trimmed).
+  2. In handle_create_group, instantiate ChatRoom(kind='group') with members={session.id} ensuring the creator is the sole initial member.
+  3. Open room for the creator and broadcast updated presence so all clients see the new group.
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  class CreateGroupCmd(BaseModel):
+      type: Literal["create_group"] = "create_group"
+      name: str = Field(min_length=1, max_length=40)
+
+  async def handle_create_group(self, session: UserSession, data: dict):
+      cmd = CreateGroupCmd(**data)
+      room = ChatRoom(
+          id=uuid.uuid4().hex, kind="group", name=cmd.name,
+          members={session.id}, names={session.id: session.name}
+      )
+      self.rooms[room.id] = room
+      await self.open_room(session, room)
+      await self.broadcast_presence()
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Creator Only:** The new group's initial membership set is strictly `{session.id}`.
+  * **No Forced Inclusion:** There is no command or mechanism to force other clients into the group upon creation.
+  * **Immediate Sync:** All connected clients immediately see the new group in their sidebar.
+
+---
+
+### Slide 13: R9 – Browse All Groups & Member Lists
+* **Requirement:** Each client can see a list of all existing chat groups (with the member list) created by any client.
+* **Generative AI Prompt:**
+  ```text
+  Implement group list and membership discovery in ChatServer:
+  1. In describe_room(), map room.members to [{"id": mid, "name": room.names[mid]}].
+  2. In broadcast_presence(), include all active groups in the "groups" list of the "state" event.
+  3. On the frontend, display all groups and their current member list in the sidebar navigation.
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  def describe_room(self, room: ChatRoom) -> dict:
+      return {
+          "id": room.id, "kind": room.kind, "name": room.name,
+          "members": [{"id": mid, "name": room.names.get(mid, "")}
+                      for mid in sorted(room.members)],
+      }
+
+  async def broadcast_presence(self):
+      await self.broadcast({
+          "type": "state",
+          "users": [{"id": s.id, "name": s.name} for s in self.sessions.values() if s.name],
+          "groups": [self.describe_room(r) for r in self.rooms.values() if r.kind == "group"],
+      })
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Full Visibility:** Every client can see all existing groups and who is inside, even before choosing to join.
+  * **Real-Time Group State:** Any group creation or member joining immediately broadcasts fresh group state to everyone.
+
+---
+
+### Slide 14: R10 – Voluntary Self-Join Group Chat
+* **Requirement:** Clients can choose to join a group chat only by themselves; they are not added automatically by the group creator.
+* **Generative AI Prompt:**
+  ```text
+  Implement voluntary group joining in ChatServer:
+  1. Define JoinGroupCmd model validating room: str.
+  2. In handle_join_group, ensure the room exists and kind == 'group'.
+  3. Add session.id to room.members (self-joining action triggered by the user).
+  4. Call open_room() for the joining client and broadcast updated group presence to all clients.
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  class JoinGroupCmd(BaseModel):
+      type: Literal["join_group"] = "join_group"
+      room: str
+
+  async def handle_join_group(self, session: UserSession, data: dict):
+      cmd = JoinGroupCmd(**data)
+      room = self.rooms.get(cmd.room)
+      if room is None or room.kind != "group":
+          raise ValueError("This group does not exist.")
+      room.members.add(session.id)
+      room.names[session.id] = session.name
+      await self.open_room(session, room)
+      await self.broadcast_presence()
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Self-Action Only:** The user must explicitly send a `join_group` command on their own WebSocket connection.
+  * **Instant Access:** Upon joining, `open_room()` delivers the room view and the member list updates for everyone.
+
+---
+
+### Slide 15: R11 – Members-Only Group Messaging
+* **Requirement:** Each client can send a text message to the group that they joined. Only the members of the chat group can see the messages.
+* **Generative AI Prompt:**
+  ```text
+  Enforce group message authorization and delivery boundaries:
+  1. In handle_message, verify session.id in room.members via authorized_room().
+  2. Broadcast group text messages strictly to room.members.
+  3. Non-members who attempt to send to the group receive an error and non-members receive zero message frames.
+  ```
+* **Code Snapshot (for Slide Code Box):**
+  ```python
+  def authorized_room(self, session: UserSession, room_id: str) -> ChatRoom:
+      room = self.rooms.get(room_id)
+      if room is None or session.id not in room.members:
+          raise ValueError("Join this room before using it.")
+      return room
+
+  async def handle_message(self, session: UserSession, data: dict):
+      cmd = MessageCmd(**data)
+      room = self.authorized_room(session, cmd.room)
+      message = { ... }
+      room.messages.append(message)
+      await self.broadcast({"type": "message", "message": message}, room.members)
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Unified Security:** Both 1-on-1 and group chats share the same `authorized_room()` guard.
+  * **Strict Boundary:** If a client hasn't joined the group, attempting to send raises an error, and messages sent by existing members never reach them.
+
+---
+
+*(Slides Special 1 through Special 4 will be populated in the next step)*
