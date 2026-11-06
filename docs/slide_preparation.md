@@ -15,10 +15,31 @@
 
 ---
 
-### Slide 02: Part 1 Overview
-* **Title:** Part 1 – System Architecture Design
+### Slide 02: Part 1 Overview & AI Planning Methodology
+* **Title:** Part 1 – System Architecture Design & AI Planning
 * **Key Requirement:** Must be fully completed before Part 2 can be graded (1.5 Points).
 * **Coverage:** R1 (System Architecture & Network Protocols) and R2 (Socket-Only Chat Transport).
+* **AI Pair Programming Methodology:**
+  * Rather than prompting for disconnected code snippets, we attached the official course rubric PDF (`project_guidelines.pdf`) into our initial prompt to establish complete architectural constraints upfront.
+  * We used an iterative step-by-step roadmap (Steps 1–5), pairing with the AI to refine schemas, handlers, and security boundaries.
+* **Initial Master Prompt (Context & Architecture Planning):**
+  ```text
+  [Attached file: project_guidelines.pdf]
+
+  "We have a university term project for Computer Network I to build a real-time chat application using WebSockets in Python.
+
+  We attached our course requirement rubric. Key targets:
+  - Part 1: System architecture (two physical laptops, pure socket chat transport over /ws, protocol explanation).
+  - Part 2: Fundamental chat features (R3 unique names, R4 presence list, R5-R7 private 1-on-1 chat rooms, R8-R11 self-join group chats with member isolation).
+  - Part 3: Special points (local AI summary, socket file transfer, read/delivered receipts, automated cloud deployment).
+
+  We want to use aiohttp and Pydantic for clean data validation and message routing (dispatcher pattern) so the code doesn't become a messy if-else block. Everything should run in-memory without a database.
+
+  Can you help us design the architecture, plan out the data structures (sessions, rooms), and guide us through implementing it step-by-step?"
+  ```
+* **Speaker Notes / Talking Points:**
+  * **Spec-Driven Architecture:** Grounded the AI on the actual course rubric PDF from day one.
+  * **Architectural Roadmap:** The AI proposed the in-memory data structures (`UserSession`, `ChatRoom`) and an incremental 5-step implementation plan. Subsequent slide prompts follow this exact roadmap.
 
 ---
 
@@ -55,37 +76,34 @@
 * **Requirement:** The chat messages between the server and each client must be implemented using Socket Programming only.
 * **Generative AI Prompt:**
   ```text
-  Implement an asynchronous WebSocket chat backend using Python aiohttp and Pydantic:
-  1. Define a persistent /ws endpoint that handles the HTTP-to-WebSocket upgrade handshake.
-  2. Implement a central dispatch() loop that parses incoming JSON frames, enforces rate limiting, and catches ValidationError centrally.
-  3. Keep chat operations strictly on the WebSocket connection without any HTTP POST chat endpoints.
+  "Let's start with Step 1: Set up the application entry point with aiohttp, bind the persistent /ws endpoint in create_app(), and write ws_handler to accept the WebSocket upgrade and route incoming frames into a central dispatch() function."
   ```
-* **Code Snapshot 1 (Left: Central Dispatcher):**
+* **Code Snapshot 1 (Left: Application Entry Point & Route Registration):**
   ```python
-  # server.py: Central Dispatcher & Error Interception
-  async def dispatch(self, session: UserSession, raw_text: str):
-      try:
-          data = json.loads(raw_text)
-          action = data.get("type")
-          if not session.name and action != "register":
-              raise ValueError("Choose a name first.")
+  # server.py: Application Entry Point & Route Registration
+  def create_app() -> web.Application:
+      server = ChatServer()
+      app = web.Application()
+      app["chat_server"] = server
 
-          handler = self.handlers.get(action)
-          if not handler:
-              raise ValueError("Unknown command.")
-          await handler(session, data)
+      # R2: The ONLY chat endpoint is /ws (no HTTP POST chat endpoints)
+      app.router.add_get("/ws", ws_handler)
+      app.router.add_get("/healthz", health)
+      app.router.add_get("/", serve_static)
+      app.router.add_get("/{filename}", serve_static)
+      return app
 
-      except (ValidationError, ValueError) as err:
-          msg = err.errors()[0]["msg"] if isinstance(err, ValidationError) else str(err)
-          await self.send(session, {"type": "error", "message": msg})
+  if __name__ == "__main__":
+      app = create_app()
+      web.run_app(app, host="0.0.0.0", port=8080)
   ```
-* **Code Snapshot 2 (Right: WebSocket Transport Endpoint):**
+* **Code Snapshot 2 (Right: WebSocket Handshake & Central Dispatcher):**
   ```python
-  # server.py: Single Persistent WebSocket Endpoint (/ws)
+  # server.py: WebSocket Handshake & Central Dispatcher
   async def ws_handler(request: web.Request) -> web.WebSocketResponse:
       server: ChatServer = request.app["chat_server"]
       socket = web.WebSocketResponse(heartbeat=30.0, max_msg_size=400_000)
-      await socket.prepare(request)
+      await socket.prepare(request)  # HTTP 101 Switching Protocols
 
       session = UserSession(socket=socket)
       server.sessions[session.id] = session
@@ -98,8 +116,12 @@
       return socket
   ```
 * **Speaker Notes / Talking Points:**
-  * **Pure Socket Transport:** Every chat action (registration, text messages, receipts, file chunks) travels strictly inside `/ws` WebSocket frames.
-  * **Dispatcher Architecture:** Replaces fragile `if/elif` chains with an extensible handler lookup table (`self.handlers`).
+  * **End-to-End Execution Trace:**
+    * `main()` $\to$ boots the application using `web.run_app()` on port 8080.
+    * `create_app()` $\to$ registers `/ws` as the single WebSocket communication gateway and serves static client assets.
+    * `ws_handler()` $\to$ handles the HTTP 101 Upgrade handshake, stores `UserSession`, streams incoming text frames, and delegates every action to `server.dispatch(session, msg.data)`.
+  * **Pure Socket Transport:** There are NO HTTP POST/GET endpoints for sending messages, creating rooms, or transferring files. Everything runs strictly over persistent WebSocket frames on `/ws`.
+  * **Central Dispatcher:** `dispatch()` parses JSON, intercepts errors (`ValidationError`, `ValueError`) centrally, and routes valid payloads to the appropriate handler.
 
 ---
 
@@ -116,10 +138,7 @@
 * **Requirement:** Each client must have a unique name.
 * **Generative AI Prompt:**
   ```text
-  Implement unique username registration in Python aiohttp using Pydantic:
-  1. Define RegisterCmd with a field_validator enforcing 1–24 characters matching [a-zA-Z0-9 ._-] and stripped of whitespace.
-  2. In handle_register, check case-insensitive uniqueness against active sessions in memory.
-  3. If unique, bind the name to session.name and respond with a welcome JSON frame.
+  "For Step 2 (Registration): How should we validate the username with Pydantic and check that the name isn't already taken by another active user?"
   ```
 * **Code Snapshot 1 (Left: Pydantic Validation Schema):**
   ```python
@@ -166,10 +185,7 @@
 * **Requirement:** Each client can see a list of names of all clients that are currently connected to the server including its own name.
 * **Generative AI Prompt:**
   ```text
-  Implement real-time presence broadcasting in ChatServer:
-  1. In broadcast_presence(), collect all active registered sessions into a list of {"id": s.id, "name": s.name} and current groups.
-  2. Broadcast a "state" JSON event to all connected sockets concurrently using asyncio.gather.
-  3. Ensure presence updates trigger upon both user registration and disconnection.
+  "Now for R4: How do we broadcast the list of online users and groups to everyone whenever someone registers or disconnects?"
   ```
 * **Code Snapshot 1 (Left: Presence Broadcast Engine):**
   ```python
@@ -214,10 +230,7 @@
 * **Requirement:** Each chat between clients (both Private and Group message) must have its own chat room.
 * **Generative AI Prompt:**
   ```text
-  Implement isolated private chat rooms in ChatServer using Pydantic:
-  1. Define OpenPrivateCmd with peer: str.
-  2. In handle_open_private, search for an existing ChatRoom(kind='private') matching members == {session.id, peer.id}.
-  3. If none exists, instantiate a new ChatRoom with a unique UUID ID and send room metadata to both sockets concurrently.
+  "Moving to Step 3 (Private Chat): How do we create or find an isolated room between two specific sessions when a user clicks on someone's name?"
   ```
 * **Code Snapshot 1 (Left: Private Room Initiation):**
   ```python
@@ -268,10 +281,7 @@
 * **Requirement:** Each chat room must include a chat box for sending text messages and a chat window for displaying the sent messages and incoming messages.
 * **Generative AI Prompt:**
   ```text
-  Implement text message processing and bounded memory storage in ChatServer:
-  1. Define MessageCmd validating room: str and text: str (1-4000 chars).
-  2. Implement automatic message ring-buffering in ChatRoom using collections.deque(maxlen=100).
-  3. Append incoming messages and broadcast to active room participants.
+  "For R6: How should we structure the message payload validation with Pydantic and store the recent message history inside each room?"
   ```
 * **Code Snapshot 1 (Left: Message Command Validation & Storage Model):**
   ```python
@@ -325,10 +335,7 @@
 * **Requirement:** Each client can send a direct text message to any client in the list. Only the sender and receiver can see the messages.
 * **Generative AI Prompt:**
   ```text
-  Implement strict direct message isolation in ChatServer:
-  1. Define authorized_room() guard verifying session.id is strictly inside room.members.
-  2. Stamp sender identity from the authenticated session.id on the server.
-  3. Broadcast message JSON frames exclusively to room.members ({Alice, Bob}).
+  "For R7: Handle direct message sending so that only the sender and recipient receive the message, rejecting it if the peer disconnected."
   ```
 * **Code Snapshot 1 (Left: Authorization Guard):**
   ```python
@@ -369,10 +376,7 @@
 * **Requirement:** Each client can create a chat group(s), which initially includes only themselves as a member.
 * **Generative AI Prompt:**
   ```text
-  Implement group chat creation in ChatServer:
-  1. Define CreateGroupCmd validating name: str (1-40 characters, trimmed).
-  2. In handle_create_group, instantiate ChatRoom(kind='group') with members={session.id} (ensuring only the creator is a member initially).
-  3. Open room for creator and broadcast updated presence so all clients see the new group.
+  "Now Step 4 (Groups): Implement group creation where the creator is initially the only member and broadcast the new group to all clients."
   ```
 * **Code Snapshot 1 (Left: Group Creation Schema):**
   ```python
@@ -416,9 +420,7 @@
 * **Requirement:** Each client can see a list of all existing chat groups (with the member list) created by any client.
 * **Generative AI Prompt:**
   ```text
-  Implement group discovery and member list serialization in ChatServer:
-  1. In describe_room(), map room.members to [{"id": mid, "name": room.names[mid]}].
-  2. In broadcast_presence(), include all active groups in the "groups" field of the "state" event.
+  "For R9: Update the presence state broadcast so all connected clients can see all active chat groups along with their current member list."
   ```
 * **Code Snapshot 1 (Left: Group Metadata Serialization):**
   ```python
@@ -462,11 +464,7 @@
 * **Requirement:** Clients can choose to join a group chat only by themselves; they are not added automatically by the group creator.
 * **Generative AI Prompt:**
   ```text
-  Implement voluntary group joining in ChatServer:
-  1. Define JoinGroupCmd model with room: str.
-  2. In handle_join_group, ensure the target room exists and kind == 'group'.
-  3. Add the calling user's session.id to room.members (self-join action).
-  4. Call open_room() for the joining client and broadcast updated group presence.
+  "For R10: Implement self-join for groups so clients can choose to join an existing group voluntarily without being auto-added by the creator."
   ```
 * **Code Snapshot 1 (Left: Group Join Command Schema):**
   ```python
@@ -501,10 +499,7 @@
 * **Requirement:** Each client can send a text message to the group that they joined. Only the members of the chat group can see the messages.
 * **Generative AI Prompt:**
   ```text
-  Enforce group message authorization and delivery boundaries:
-  1. In handle_message, verify session.id in room.members via authorized_room().
-  2. Broadcast group text messages strictly to room.members.
-  3. Reject non-member messages with ValueError and ensure non-members receive zero packets.
+  "For R11: Implement group messaging with strict room authorization so only verified members can send and receive group chat messages."
   ```
 * **Code Snapshot 1 (Left: Membership Authorization Guard):**
   ```python
@@ -557,11 +552,7 @@
 * **AI Model:** Qwen2.5 0.5B Instruct (`qwen2.5:0.5b`) served via Ollama (Ref: [HuggingFace Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct), [Ollama Library](https://ollama.com/library/qwen2.5:0.5b)).
 * **Generative AI Prompt:**
   ```text
-  Implement local AI chat summarization in our aiohttp chat server:
-  1. Define SummarizeCmd with room: str.
-  2. In handle_summarize, collect the last 30 text messages from the room history.
-  3. Query local Ollama's /api/chat endpoint asynchronously with model 'qwen2.5:0.5b' and system prompt to generate a 3-bullet summary in the conversation language.
-  4. Send {"type": "summary", "room": room_id, "text": text} back to the requesting client.
+  "For Special Point 1: Connect our server to a local Ollama instance to summarize recent chat messages in a room asynchronously without blocking WebSocket traffic."
   ```
 * **Code Snapshot 1 (Left: Summarize Command Schema & Transcript Extraction):**
   ```python
@@ -615,10 +606,7 @@
 * **Description:** Transfer files (images, documents, code) up to 256 KiB directly through persistent WebSocket frames without HTTP upload endpoints.
 * **Generative AI Prompt:**
   ```text
-  Implement file sharing over WebSocket using Pydantic validation:
-  1. Define FileCmd model with filename (sanitized, 1-120 chars, no directory traversal slashes) and data (Base64 string).
-  2. In a field_validator, decode the Base64 payload and ensure length is between 1 byte and 256 KiB.
-  3. In handle_file, record the message with kind='file' and broadcast strictly to room members.
+  "For Special Point 2: Allow users to send files up to 256KB by encoding them as Base64 inside regular WebSocket messages."
   ```
 * **Code Snapshot 1 (Left: File Command Schema & Base64 Validation):**
   ```python
@@ -676,10 +664,7 @@
 * **Description:** Real-time multi-stage message delivery tracking (Sent $\to$ Delivered $\to$ Read) displayed via live indicators.
 * **Generative AI Prompt:**
   ```text
-  Implement real-time read and delivery receipts in ChatServer:
-  1. Define ReceiptCmd model validating type ('read' or 'received'), room: str, and ids: list[str] (up to 100).
-  2. In handle_receipt, find matching messages in room.messages and append session.id to delivered_by or read_by.
-  3. Broadcast receipt event {"type": "receipt", "room": room.id, "id": msg_id, "read_by": [...], "delivered_by": [...]} to room members.
+  "For Special Point 3: Implement read and delivered receipts by tracking which sessions have received or read each message ID."
   ```
 * **Code Snapshot 1 (Left: Receipt Command Schema):**
   ```python
@@ -728,10 +713,7 @@
 * **Public Live URL:** [https://relay.161.118.238.148.sslip.io](https://relay.161.118.238.148.sslip.io)
 * **Generative AI Prompt:**
   ```text
-  Set up automated cloud deployment for the WebSocket chat backend:
-  1. Configure multi-arch Docker build (linux/amd64 and linux/arm64) with GitHub Container Registry (GHCR).
-  2. Configure Traefik reverse proxy labels in compose.oracle.yml for automatic Let's Encrypt TLS/SSL termination.
-  3. Create GitHub Actions workflow to publish container images and deploy over SSH with health check verification.
+  "For Special Point 4: Write a GitHub Actions workflow and Docker Compose config with Traefik to auto-deploy the app to Oracle Cloud on git push."
   ```
 * **Code Snapshot 1 (Left: Traefik Reverse Proxy Configuration):**
   ```yaml
