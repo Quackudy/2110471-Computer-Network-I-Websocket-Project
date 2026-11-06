@@ -29,6 +29,8 @@ const state = {
   activeRoomId: null,
   maxFile: 262144,
   fileUrls: new Map(),
+  markedReadIds: new Set(),
+  markedReceivedIds: new Set(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -38,6 +40,24 @@ function showToast(msg) {
   t.textContent = msg;
   t.hidden = false;
   setTimeout(() => { t.hidden = true; }, 3000);
+}
+
+function setLoginBusy(busy) {
+  const btn = $("btn-login");
+  const input = $("name-input");
+  if (btn) {
+    btn.disabled = busy;
+    btn.textContent = busy ? "Connecting..." : "Connect";
+  }
+  if (input) input.disabled = busy;
+}
+
+function setSummarizeBusy(busy) {
+  const btn = $("btn-summarize");
+  if (btn) {
+    btn.disabled = busy;
+    btn.textContent = busy ? "Summarizing..." : "AI Summary";
+  }
 }
 
 function send(cmd) {
@@ -53,6 +73,11 @@ function send(cmd) {
 // ==============================================================================
 
 function connect(username) {
+  if (state.socket && state.socket.readyState !== WebSocket.CLOSED) {
+    try { state.socket.close(); } catch {}
+  }
+
+  setLoginBusy(true);
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
   state.socket = socket;
@@ -67,6 +92,7 @@ function connect(username) {
 
     switch (data.type) {
       case "welcome":
+        setLoginBusy(false);
         state.me = { id: data.id, name: data.name };
         state.maxFile = data.max_file || 262144;
         $("my-name").textContent = data.name;
@@ -78,9 +104,11 @@ function connect(username) {
 
       case "error":
         if (!state.me) {
+          setLoginBusy(false);
           $("login-error").textContent = data.message;
           socket.close();
         } else {
+          setSummarizeBusy(false);
           showToast(data.message);
         }
         break;
@@ -104,11 +132,12 @@ function connect(username) {
         if (!room.messages.some((m) => m.id === data.message.id)) {
           room.messages.push(data.message);
         }
-        if (state.me && data.message.sender !== state.me.id) {
+        if (state.me && data.message.sender !== state.me.id && !state.markedReceivedIds.has(data.message.id)) {
+          state.markedReceivedIds.add(data.message.id);
           send(ModelCmd.received(room.id, [data.message.id]));
         }
         if (state.activeRoomId === room.id) {
-          renderMessages();
+          appendMessage(data.message);
           markRead();
         }
         break;
@@ -120,7 +149,9 @@ function connect(username) {
         if (msg) {
           msg.read_by = data.read_by;
           msg.delivered_by = data.delivered_by;
-          if (state.activeRoomId === data.room) renderMessages();
+          if (state.activeRoomId === data.room) {
+            updateReceipt(data.id, msg);
+          }
         }
         break;
       }
@@ -128,6 +159,7 @@ function connect(username) {
       case "summary_pending":
       case "summary": {
         const room = state.rooms.get(data.room);
+        if (data.type === "summary") setSummarizeBusy(false);
         if (!room) return;
         room.summary = { text: data.type === "summary_pending" ? "Summarizing with Ollama..." : data.text, model: data.model };
         if (state.activeRoomId === data.room) renderSummary();
@@ -139,6 +171,10 @@ function connect(username) {
   socket.addEventListener("close", () => {
     state.me = null;
     state.activeRoomId = null;
+    state.markedReadIds.clear();
+    state.markedReceivedIds.clear();
+    setLoginBusy(false);
+    setSummarizeBusy(false);
     $("login-view").hidden = false;
     $("chat-view").hidden = true;
     $("user-status").hidden = true;
@@ -150,9 +186,12 @@ function markRead() {
   const room = state.rooms.get(state.activeRoomId);
   if (!room) return;
   const unread = room.messages
-    .filter((m) => m.sender !== state.me?.id && !m.read_by.includes(state.me?.id))
+    .filter((m) => m.sender !== state.me?.id && !m.read_by.includes(state.me?.id) && !state.markedReadIds.has(m.id))
     .map((m) => m.id);
-  if (unread.length) send(ModelCmd.read(room.id, unread));
+  if (unread.length) {
+    for (const id of unread) state.markedReadIds.add(id);
+    send(ModelCmd.read(room.id, unread));
+  }
 }
 
 // ==============================================================================
@@ -174,7 +213,11 @@ function renderSidebar() {
     if (isMe) {
       btn.disabled = true;
     } else {
-      btn.addEventListener("click", () => send(ModelCmd.openPrivate(u.id)));
+      btn.addEventListener("click", () => {
+        btn.disabled = true;
+        send(ModelCmd.openPrivate(u.id));
+        setTimeout(() => { btn.disabled = false; }, 600);
+      });
     }
     li.appendChild(btn);
     userList.appendChild(li);
@@ -249,6 +292,41 @@ function getFileUrl(id, b64) {
   return url;
 }
 
+function createMessageElement(m) {
+  const isMine = m.sender === state.me?.id;
+  const line = document.createElement("div");
+  line.className = `msg-line${isMine ? " mine" : ""}`;
+  line.dataset.id = m.id;
+
+  const time = document.createElement("span");
+  time.className = "time";
+  time.textContent = new Date(m.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const author = document.createElement("b");
+  author.textContent = isMine ? "You: " : `${m.name}: `;
+
+  line.append(time, author);
+
+  if (m.kind === "file") {
+    const a = document.createElement("a");
+    a.href = getFileUrl(m.id, m.data);
+    a.download = m.filename;
+    a.textContent = `[File: ${m.filename} (${(m.bytes / 1024).toFixed(1)} KiB)]`;
+    line.appendChild(a);
+  } else {
+    line.appendChild(document.createTextNode(m.text));
+  }
+
+  if (isMine) {
+    const rec = document.createElement("span");
+    rec.className = `receipt${m.read_by?.length ? " read" : ""}`;
+    rec.textContent = m.read_by?.length ? "✓✓ Read" : (m.delivered_by?.length ? "✓✓ Delivered" : "✓ Sent");
+    line.appendChild(rec);
+  }
+
+  return line;
+}
+
 function renderMessages() {
   const room = state.rooms.get(state.activeRoomId);
   const box = $("msg-box");
@@ -256,39 +334,24 @@ function renderMessages() {
   if (!room) return;
 
   for (const m of room.messages) {
-    const isMine = m.sender === state.me?.id;
-    const line = document.createElement("div");
-    line.className = `msg-line${isMine ? " mine" : ""}`;
-
-    const time = document.createElement("span");
-    time.className = "time";
-    time.textContent = new Date(m.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-    const author = document.createElement("b");
-    author.textContent = isMine ? "You: " : `${m.name}: `;
-
-    line.append(time, author);
-
-    if (m.kind === "file") {
-      const a = document.createElement("a");
-      a.href = getFileUrl(m.id, m.data);
-      a.download = m.filename;
-      a.textContent = `[File: ${m.filename} (${(m.bytes / 1024).toFixed(1)} KiB)]`;
-      line.appendChild(a);
-    } else {
-      line.appendChild(document.createTextNode(m.text));
-    }
-
-    if (isMine) {
-      const rec = document.createElement("span");
-      rec.className = `receipt${m.read_by?.length ? " read" : ""}`;
-      rec.textContent = m.read_by?.length ? "✓✓ Read" : (m.delivered_by?.length ? "✓✓ Delivered" : "✓ Sent");
-      line.appendChild(rec);
-    }
-
-    box.appendChild(line);
+    box.appendChild(createMessageElement(m));
   }
   box.scrollTop = box.scrollHeight;
+}
+
+function appendMessage(m) {
+  const box = $("msg-box");
+  if (box.querySelector(`[data-id="${m.id}"]`)) return;
+  box.appendChild(createMessageElement(m));
+  box.scrollTop = box.scrollHeight;
+}
+
+function updateReceipt(id, msg) {
+  const line = $("msg-box").querySelector(`[data-id="${id}"] .receipt`);
+  if (line) {
+    line.className = `receipt${msg.read_by?.length ? " read" : ""}`;
+    line.textContent = msg.read_by?.length ? "✓✓ Read" : (msg.delivered_by?.length ? "✓✓ Delivered" : "✓ Sent");
+  }
 }
 
 // ==============================================================================
@@ -322,7 +385,10 @@ $("group-form").addEventListener("submit", (e) => {
 });
 
 $("btn-summarize").addEventListener("click", () => {
-  if (state.activeRoomId) send(ModelCmd.summarize(state.activeRoomId));
+  if (state.activeRoomId) {
+    setSummarizeBusy(true);
+    send(ModelCmd.summarize(state.activeRoomId));
+  }
 });
 
 $("btn-close-summary").addEventListener("click", () => {

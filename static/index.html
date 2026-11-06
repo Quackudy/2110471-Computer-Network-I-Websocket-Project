@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Relay</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css">
-  <script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/style.css?v=2">
+  <script src="/app.js?v=2" defer></script>
 </head>
 <body>
 
@@ -16,7 +16,7 @@
     <p>Enter a username to connect:</p>
     <form id="login-form">
       <input id="name-input" type="text" maxlength="24" placeholder="Username" required autofocus>
-      <button type="submit">Connect</button>
+      <button id="btn-login" type="submit">Connect</button>
       <div id="login-error" class="error"></div>
     </form>
   </div>
