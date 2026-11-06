@@ -29,19 +29,19 @@ const state = {
   activeRoomId: null,
   maxFile: 262144,      // 256 KiB
   aiModel: "",
-  fileUrls: new Map(),  // message_id -> Blob ObjectURL
+  fileUrls: new Map(),  // msg_id -> Blob URL
 };
 
 // ==============================================================================
-// 3. DOM Element Helpers
+// 3. Helpers
 // ==============================================================================
 
 const $ = (id) => document.getElementById(id);
 
 let toastTimer = null;
-function showToast(message) {
+function showToast(msg) {
   const el = $("toast");
-  el.textContent = message;
+  el.textContent = msg;
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
@@ -49,7 +49,7 @@ function showToast(message) {
 
 function sendCmd(cmd) {
   if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-    showToast("Disconnected from server. Please reconnect.");
+    showToast("Disconnected. Please connect again.");
     return false;
   }
   state.socket.send(JSON.stringify(cmd));
@@ -57,7 +57,7 @@ function sendCmd(cmd) {
 }
 
 // ==============================================================================
-// 4. WebSocket Lifecycle & Dispatcher
+// 4. WebSocket Lifecycle
 // ==============================================================================
 
 function connect(username) {
@@ -70,7 +70,7 @@ function connect(username) {
   $("login-error").textContent = "Connecting...";
 
   socket.addEventListener("open", () => {
-    // Send R3 register command
+    // Send register command (R3)
     sendCmd(ModelCmd.register(username));
   });
 
@@ -79,7 +79,7 @@ function connect(username) {
     try {
       data = JSON.parse(event.data);
     } catch {
-      showToast("Received invalid message payload.");
+      showToast("Invalid JSON from server.");
       return;
     }
 
@@ -89,8 +89,9 @@ function connect(username) {
         state.maxFile = data.max_file || 262144;
         state.aiModel = data.ai_model || "";
         $("my-name").textContent = data.name;
-        $("login-overlay").hidden = true;
-        $("app").hidden = false;
+        $("login-section").hidden = true;
+        $("chat-section").hidden = false;
+        $("user-status").hidden = false;
         $("login-error").textContent = "";
         $("btn-login").disabled = false;
         break;
@@ -127,15 +128,15 @@ function connect(username) {
         break;
 
       case "receipt":
-        handleReceiptUpdate(data);
+        handleReceipt(data);
         break;
 
       case "summary_pending":
-        handleSummaryUpdate(data.room, "Generating summary with Ollama...", true);
+        handleSummary(data.room, "Generating AI summary with Ollama...", true);
         break;
 
       case "summary":
-        handleSummaryUpdate(data.room, data.text, false, data.model);
+        handleSummary(data.room, data.text, false, data.model);
         break;
     }
   });
@@ -143,16 +144,17 @@ function connect(username) {
   socket.addEventListener("close", () => {
     state.me = null;
     state.activeRoomId = null;
-    $("login-overlay").hidden = false;
-    $("app").hidden = true;
+    $("login-section").hidden = false;
+    $("chat-section").hidden = true;
+    $("user-status").hidden = true;
     $("btn-login").disabled = false;
     if ($("login-error").textContent === "Connecting...") {
-      $("login-error").textContent = "Connection lost. Please log in again.";
+      $("login-error").textContent = "Disconnected from server.";
     }
   });
 
   socket.addEventListener("error", () => {
-    $("login-error").textContent = "Unable to connect to server.";
+    $("login-error").textContent = "Connection error. Is the server running?";
     $("btn-login").disabled = false;
   });
 }
@@ -169,7 +171,7 @@ function handleIncomingMessage(msg) {
     room.messages.push(msg);
   }
 
-  // Auto-send delivery receipt if sender is not me
+  // Auto-send delivery receipt if from someone else
   if (state.me && msg.sender !== state.me.id) {
     sendCmd(ModelCmd.received(room.id, [msg.id]));
   }
@@ -180,7 +182,7 @@ function handleIncomingMessage(msg) {
   }
 }
 
-function handleReceiptUpdate(data) {
+function handleReceipt(data) {
   const room = state.rooms.get(data.room);
   if (!room) return;
   const msg = room.messages.find((m) => m.id === data.id);
@@ -207,7 +209,7 @@ function markRead() {
   }
 }
 
-function handleSummaryUpdate(roomId, text, isPending, model) {
+function handleSummary(roomId, text, isPending, model) {
   const room = state.rooms.get(roomId);
   if (!room) return;
   room.summary = { text, isPending, model };
@@ -221,7 +223,7 @@ function handleSummaryUpdate(roomId, text, isPending, model) {
 // ==============================================================================
 
 function renderSidebar() {
-  // 1. Online Users list
+  // 1. Users list
   $("user-count").textContent = state.users.length;
   const userList = $("user-list");
   userList.replaceChildren();
@@ -230,17 +232,18 @@ function renderSidebar() {
     const isMe = state.me && user.id === state.me.id;
     const li = document.createElement("li");
     const btn = document.createElement("button");
-    btn.className = "nav-item";
+    btn.type = "button";
+    btn.className = "user-row";
 
     const nameSpan = document.createElement("span");
     nameSpan.textContent = user.name;
     btn.appendChild(nameSpan);
 
     if (isMe) {
-      const youBadge = document.createElement("span");
-      youBadge.className = "badge-you";
-      youBadge.textContent = "you";
-      btn.appendChild(youBadge);
+      const you = document.createElement("span");
+      you.className = "badge-you";
+      you.textContent = "you";
+      btn.appendChild(you);
       btn.disabled = true;
     } else {
       btn.addEventListener("click", () => {
@@ -257,43 +260,41 @@ function renderSidebar() {
   groupList.replaceChildren();
 
   for (const group of state.groups) {
-    const joined = group.members.some((m) => state.me && m.id === state.me.id);
+    const isJoined = group.members.some((m) => state.me && m.id === state.me.id);
     const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.className = `nav-item${group.id === state.activeRoomId ? " active" : ""}`;
+    const row = document.createElement("div");
+    row.className = `group-row${group.id === state.activeRoomId ? " active" : ""}`;
 
-    const infoDiv = document.createElement("div");
-    const nameSpan = document.createElement("span");
-    nameSpan.textContent = group.name;
-    const metaSpan = document.createElement("div");
-    metaSpan.className = "nav-item-meta";
-    metaSpan.textContent = `${group.members.length} member${group.members.length === 1 ? "" : "s"}`;
-    infoDiv.append(nameSpan, metaSpan);
-    btn.appendChild(infoDiv);
+    const label = document.createElement("span");
+    label.textContent = `# ${group.name} (${group.members.length})`;
+    label.style.cursor = isJoined ? "pointer" : "default";
+    row.appendChild(label);
 
-    if (!joined) {
-      const joinBadge = document.createElement("span");
-      joinBadge.className = "btn-sm btn-secondary";
-      joinBadge.textContent = "Join";
-      btn.appendChild(joinBadge);
-      btn.addEventListener("click", () => {
+    if (!isJoined) {
+      const joinBtn = document.createElement("button");
+      joinBtn.type = "button";
+      joinBtn.className = "btn-join";
+      joinBtn.textContent = "Join";
+      joinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
         sendCmd(ModelCmd.joinGroup(group.id));
       });
+      row.appendChild(joinBtn);
     } else {
-      btn.addEventListener("click", () => {
+      row.addEventListener("click", () => {
         selectRoom(group.id);
       });
     }
 
-    li.appendChild(btn);
+    li.appendChild(row);
     groupList.appendChild(li);
   }
 }
 
 function selectRoom(roomId) {
   state.activeRoomId = roomId;
-  $("empty-state").hidden = true;
-  $("chat-panel").hidden = false;
+  $("no-room-selected").hidden = true;
+  $("room-view").hidden = false;
 
   renderHeader();
   renderSummary();
@@ -311,10 +312,10 @@ function renderHeader() {
     : room.members.find((m) => m.id !== state.me.id)?.name || "Private chat";
 
   $("room-title").textContent = title;
-  const memberNames = room.members
+  const memberList = room.members
     .map((m) => (m.id === state.me.id ? `${m.name} (you)` : m.name))
     .join(", ");
-  $("room-members").textContent = `Members: ${memberNames}`;
+  $("room-members").textContent = `Members: ${memberList}`;
 }
 
 function renderSummary() {
@@ -330,9 +331,7 @@ function renderSummary() {
 }
 
 function getFileUrl(msgId, filename, base64Data) {
-  if (state.fileUrls.has(msgId)) {
-    return state.fileUrls.get(msgId);
-  }
+  if (state.fileUrls.has(msgId)) return state.fileUrls.get(msgId);
   const binary = atob(base64Data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
@@ -352,35 +351,32 @@ function renderMessages() {
 
   for (const msg of room.messages) {
     const isMine = state.me && msg.sender === state.me.id;
-    const row = document.createElement("div");
-    row.className = `msg-row${isMine ? " mine" : ""}`;
+    const item = document.createElement("div");
+    item.className = `msg-item${isMine ? " mine" : ""}`;
 
-    const header = document.createElement("div");
-    header.className = "msg-header";
+    const top = document.createElement("div");
+    top.className = "msg-top";
     const sender = document.createElement("strong");
     sender.textContent = isMine ? "You" : msg.name;
     const time = document.createElement("span");
-    time.className = "msg-time";
     time.textContent = new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    header.append(sender, time);
-    row.appendChild(header);
+    top.append(sender, time);
+    item.appendChild(top);
 
-    const body = document.createElement("div");
-    body.className = "msg-body";
+    const content = document.createElement("div");
+    content.className = "msg-content";
 
     if (msg.kind === "file") {
-      const fileDiv = document.createElement("div");
-      fileDiv.className = "file-attachment";
       const link = document.createElement("a");
+      link.className = "file-link";
       link.href = getFileUrl(msg.id, msg.filename, msg.data);
       link.download = msg.filename;
       link.textContent = `📎 ${msg.filename} (${(msg.bytes / 1024).toFixed(1)} KiB)`;
-      fileDiv.appendChild(link);
-      body.appendChild(fileDiv);
+      content.appendChild(link);
     } else {
-      body.textContent = msg.text;
+      content.textContent = msg.text;
     }
-    row.appendChild(body);
+    item.appendChild(content);
 
     if (isMine) {
       const receipt = document.createElement("span");
@@ -393,27 +389,27 @@ function renderMessages() {
       } else {
         receipt.textContent = "✓ Sent";
       }
-      row.appendChild(receipt);
+      item.appendChild(receipt);
     }
 
-    list.appendChild(row);
+    list.appendChild(item);
   }
 
   list.scrollTop = list.scrollHeight;
 }
 
 // ==============================================================================
-// 7. Event Listeners & User Actions
+// 7. Event Listeners
 // ==============================================================================
 
-// Login Form Submit
+// Login
 $("login-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const name = $("name-input").value.trim();
   if (name) connect(name);
 });
 
-// Send Message Submit
+// Send message
 $("composer").addEventListener("submit", (e) => {
   e.preventDefault();
   const text = $("message-input").value.trim();
@@ -424,26 +420,18 @@ $("composer").addEventListener("submit", (e) => {
   }
 });
 
-// Group Creation Modal
-$("btn-new-group").addEventListener("click", () => {
-  $("group-name-input").value = "";
-  $("group-dialog").showModal();
-});
-
-$("btn-cancel-group").addEventListener("click", () => {
-  $("group-dialog").close();
-});
-
-$("group-form").addEventListener("submit", (e) => {
+// Create group
+$("create-group-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  const name = $("group-name-input").value.trim();
+  const input = $("group-name-input");
+  const name = input.value.trim();
   if (name) {
     sendCmd(ModelCmd.createGroup(name));
-    $("group-dialog").close();
+    input.value = "";
   }
 });
 
-// AI Summary Trigger
+// AI Summary
 $("btn-summarize").addEventListener("click", () => {
   if (state.activeRoomId) {
     sendCmd(ModelCmd.summarize(state.activeRoomId));
@@ -458,7 +446,7 @@ $("btn-close-summary").addEventListener("click", () => {
   }
 });
 
-// File Upload Trigger
+// File attach
 $("btn-attach").addEventListener("click", () => {
   $("file-input").click();
 });
@@ -469,7 +457,7 @@ $("file-input").addEventListener("change", async () => {
   if (!file || !state.activeRoomId) return;
 
   if (file.size > state.maxFile) {
-    showToast(`File too large. Maximum size is ${(state.maxFile / 1024).toFixed(0)} KiB.`);
+    showToast(`File too large. Max is ${(state.maxFile / 1024).toFixed(0)} KiB.`);
     return;
   }
 
@@ -481,11 +469,11 @@ $("file-input").addEventListener("change", async () => {
   reader.readAsDataURL(file);
 });
 
-// Disconnect Button
+// Disconnect
 $("btn-disconnect").addEventListener("click", () => {
   state.socket?.close();
 });
 
-// Visibility & Focus for Read Receipts
+// Window focus for read receipts
 document.addEventListener("visibilitychange", markRead);
 window.addEventListener("focus", markRead);
