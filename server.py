@@ -251,7 +251,12 @@ class ChatServer:
         """R3: Register unique username (case-insensitive)."""
         cmd = RegisterCmd(**data)
 
-        if any(s.name.casefold() == cmd.name.casefold() for s in self.sessions.values()):
+        # Evict closed sockets before checking uniqueness (avoids ghost collisions on rapid reload)
+        dead = [s for s in list(self.sessions.values()) if s.socket.closed]
+        for s in dead:
+            await self.disconnect(s)
+
+        if any(s.name.casefold() == cmd.name.casefold() for s in self.sessions.values() if s.id != session.id):
             raise ValueError("That name is already connected. Choose another.")
 
         if len(self.sessions) >= 100:
@@ -548,7 +553,12 @@ def create_app() -> web.Application:
         file_path = STATIC_DIR / filename
         if not file_path.exists():
             raise web.HTTPNotFound()
-        return web.FileResponse(file_path)
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+        return web.FileResponse(file_path, headers=headers)
 
     app.router.add_get("/healthz", health)
     app.router.add_get("/", serve_static)
