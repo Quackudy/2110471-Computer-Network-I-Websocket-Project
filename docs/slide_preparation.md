@@ -51,10 +51,13 @@
                             ├──► [ Traefik Proxy : 443 ] ──► [ Python Server : 8080 ] ──► [ Ollama AI : 11434 ]
   [ Client 2 (Laptop B) ] ──┘     (HTTPS / WSS : 443)          (HTTP / WebSocket : 8080)          (HTTP : 11434)
   ```
-* **Speaker Notes / Talking Points:**
-  * **Physical Separation:** Two independent physical laptops (Client 1 & Client 2) running browser clients on separate local IP addresses.
-  * **Edge Reverse Proxy:** Traefik terminates TLS on public port 443 with automated Let's Encrypt certificates.
-  * **Internal Network:** Python server runs on port 8080 inside Docker, communicating with local Ollama on port 11434 over a private network.
+* **How It Works (System Flow):**
+  1. Two physical laptops (Client 1 & 2) connect over HTTPS/WSS (Port 443) to Traefik Reverse Proxy.
+  2. Traefik terminates TLS/SSL and proxies plain HTTP/WebSocket traffic to Python server (Port 8080) on internal network.
+  3. Python server queries on-premise Ollama (Port 11434) for AI summarization over private network.
+* **Key Notes & Highlights:**
+  * **Physical Separation:** Completely independent client machines running native browser WebSockets.
+  * **Zero Direct Public Access:** Python server and Ollama run safely behind Traefik inside private Docker networks.
 
 ---
 
@@ -115,13 +118,13 @@
           await server.disconnect(session)
       return socket
   ```
-* **Speaker Notes / Talking Points:**
-  * **End-to-End Execution Trace:**
-    * `main()` $\to$ boots the application using `web.run_app()` on port 8080.
-    * `create_app()` $\to$ registers `/ws` as the single WebSocket communication gateway and serves static client assets.
-    * `ws_handler()` $\to$ handles the HTTP 101 Upgrade handshake, stores `UserSession`, streams incoming text frames, and delegates every action to `server.dispatch(session, msg.data)`.
-  * **Pure Socket Transport:** There are NO HTTP POST/GET endpoints for sending messages, creating rooms, or transferring files. Everything runs strictly over persistent WebSocket frames on `/ws`.
-  * **Central Dispatcher:** `dispatch()` parses JSON, intercepts errors (`ValidationError`, `ValueError`) centrally, and routes valid payloads to the appropriate handler.
+* **How It Works (Code & Flow):**
+  1. `main()` boots app on port 8080 $\to$ `create_app()` binds static routes and `/ws` WebSocket endpoint.
+  2. `ws_handler()` accepts connection (HTTP 101 Upgrade), creates `UserSession(id=UUID)`, and streams frames via `async for msg in socket`.
+  3. Incoming text frames are passed to `server.dispatch()` to validate schemas and route to handlers.
+* **Key Notes & Highlights:**
+  * **100% Socket Transport:** No HTTP POST chat endpoints—all messages, receipts, and files travel exclusively over `/ws`.
+  * **Central Error Interception:** Catches `ValidationError` and `ValueError` centrally and sends friendly error frames back to client.
 
 ---
 
@@ -174,10 +177,13 @@
       })
       await self.broadcast_presence()
   ```
-* **Speaker Notes / Talking Points:**
-  * **Validation Guard:** Names are validated via regex and trimmed before storage.
-  * **Case-Insensitive Uniqueness:** Prevents spoofing where `Alice` and `alice` connect concurrently.
-  * **Session Identity:** Server assigns a UUID session ID and reserves the name for the connection lifetime.
+* **How It Works (Code & Flow):**
+  1. Client sends `{"type": "register", "name": "..."}` over WebSocket.
+  2. `RegisterCmd` trims whitespace and validates length (1–24 chars) and regex `^[\w .-]{1,24}$`.
+  3. `handle_register()` checks `casefold()` against active sessions. If unique, saves `session.name` and replies with `welcome` event.
+* **Key Notes & Highlights:**
+  * **Case-Insensitive Check:** Prevents duplicate logins like `Alice` and `alice` at the same time.
+  * **Ephemeral Identity:** Name is tied to the active socket session UUID; when disconnected, the name is freed.
 
 ---
 
@@ -220,9 +226,13 @@
       if session.name:
           await self.broadcast_presence()
   ```
-* **Speaker Notes / Talking Points:**
-  * **Instant Synchronization:** When any user logs in or closes their browser, all connected users receive the updated client list immediately.
-  * **Self-Inclusive List:** The user array explicitly includes the current user's session, allowing the UI to show "(you)".
+* **How It Works (Code & Flow):**
+  1. Whenever a user registers or disconnects, server calls `broadcast_presence()`.
+  2. Server collects all active sessions `[{"id": s.id, "name": s.name}]` and group rooms.
+  3. Broadcasts a `{"type": "state", ...}` event to all connected sockets concurrently via `asyncio.gather()`.
+* **Key Notes & Highlights:**
+  * **Real-Time Sync:** Instant UI updates across all clients without slow HTTP polling.
+  * **Self-Inclusive:** User's own session is included so UI can label "(you)".
 
 ---
 
@@ -271,9 +281,14 @@
           "members": [{"id": m, "name": room.names.get(m, "")} for m in sorted(room.members)],
       }
   ```
-* **Speaker Notes / Talking Points:**
-  * **Isolated Entities:** Every 1-on-1 participant pair and group chat receives an independent `ChatRoom` instance.
-  * **Deduplication:** Multiple clicks on a user reopen the existing conversation instead of creating duplicates.
+* **How It Works (Code & Flow):**
+  1. User sends `{"type": "open_private", "peer": peer_id}`.
+  2. `handle_open_private()` checks if a room with `members == {session.id, peer.id}` already exists.
+  3. If not, instantiates a new `ChatRoom` with unique UUID.
+  4. Calls `open_room()` to deliver room metadata and message history to both users concurrently.
+* **Key Notes & Highlights:**
+  * **Deduplication:** Multiple clicks on the same user reuse the existing room instead of creating duplicates.
+  * **Isolated State:** Each conversation is its own separate room object in memory.
 
 ---
 
@@ -325,9 +340,14 @@
       room.messages.append(message)
       await self.broadcast({"type": "message", "message": message}, room.members)
   ```
-* **Speaker Notes / Talking Points:**
-  * **Memory Safety:** Uses Python `deque(maxlen=100)`—retaining the 100 newest messages automatically without complex manual memory evictions.
-  * **UI Separation:** The browser cleanly renders input in `#composer` and scrollable history in `#messages`.
+* **How It Works (Code & Flow):**
+  1. User types in chat box and sends `{"type": "message", "room": room_id, "text": "..."}`.
+  2. `MessageCmd` validates text length (1–4000 characters).
+  3. Server appends message to `room.messages` (a ring buffer) and broadcasts to room members.
+  4. Client chat window renders incoming messages in real time.
+* **Key Notes & Highlights:**
+  * **Automatic Ring Buffer:** `deque(maxlen=100)` automatically drops oldest messages beyond 100, preventing server memory overflow.
+  * **UI Separation:** Clean distinction between message input box (`#composer`) and scrollable history window (`#messages`).
 
 ---
 
@@ -366,9 +386,14 @@
       # R7: Delivered strictly to room.members (only sender and receiver)
       await self.broadcast({"type": "message", "message": message}, room.members)
   ```
-* **Speaker Notes / Talking Points:**
-  * **Strict Privacy Isolation:** Messages are broadcast *only* to `room.members`. A third connected client ("Eve") receives zero packets.
-  * **Server-Derived Identity:** Sender ID and name are stamped by the server; forged `"sender"` fields in client payloads are ignored.
+* **How It Works (Code & Flow):**
+  1. User sends a private message to a 1-on-1 room.
+  2. `authorized_room()` checks that sender is actually in `room.members`.
+  3. Server injects server-derived `session.id` and `session.name` as sender.
+  4. Broadcasts message *only* to the 2 members of `{session.id, peer.id}`.
+* **Key Notes & Highlights:**
+  * **Zero Packet Leaks:** Third-party clients (e.g. Eve) never receive packets for rooms they aren't part of.
+  * **Anti-Spoofing:** Server stamps sender identity; client-supplied sender values are ignored.
 
 ---
 
@@ -410,9 +435,14 @@
       await self.open_room(session, room)
       await self.broadcast_presence()
   ```
-* **Speaker Notes / Talking Points:**
-  * **Creator Only:** The new group's initial membership set is strictly `{session.id}`.
-  * **No Forced Additions:** There is no mechanism or command for the creator to auto-add other users without their consent.
+* **How It Works (Code & Flow):**
+  1. User sends `{"type": "create_group", "name": "Study Group"}`.
+  2. `CreateGroupCmd` validates name (1–40 characters).
+  3. Server creates `ChatRoom(kind="group")` with initial `members = {session.id}`.
+  4. Opens room for creator and broadcasts new group list to everyone via `broadcast_presence()`.
+* **Key Notes & Highlights:**
+  * **Creator Only:** The creator starts as the sole member; no users are forced into the group.
+  * **Immediate Discovery:** All other connected clients see the new group appear in their list right away.
 
 ---
 
@@ -454,9 +484,13 @@
           ],
       })
   ```
-* **Speaker Notes / Talking Points:**
-  * **Public Visibility:** Every client can see all existing groups and who is inside, even before choosing to join.
-  * **Real-Time Group Sync:** Any group creation or member joining immediately broadcasts fresh group state to everyone.
+* **How It Works (Code & Flow):**
+  1. `describe_room()` formats group metadata: `id`, `name`, and `members` array `[{"id": ..., "name": ...}]`.
+  2. `broadcast_presence()` includes all groups in the global `state` event.
+  3. Every client receives the list and renders all available groups and who is currently inside.
+* **Key Notes & Highlights:**
+  * **Full Transparency:** Clients can inspect existing groups and their members before deciding to join.
+  * **Live Membership Sync:** Joining or leaving immediately updates the member list for all clients.
 
 ---
 
@@ -489,9 +523,13 @@
       await self.open_room(session, room)
       await self.broadcast_presence()
   ```
-* **Speaker Notes / Talking Points:**
-  * **Self-Action Only:** The user must explicitly send a `join_group` command on their own WebSocket connection.
-  * **Instant Access:** Upon joining, `open_room()` delivers the room view and updates the member list for all clients.
+* **How It Works (Code & Flow):**
+  1. User clicks "Join" and sends `{"type": "join_group", "room": room_id}`.
+  2. `handle_join_group()` verifies the group exists and adds `session.id` to `room.members`.
+  3. Server delivers room history to the user via `open_room()` and updates presence for everyone.
+* **Key Notes & Highlights:**
+  * **Self-Action Only:** Users join strictly by their own voluntary action over their own socket.
+  * **No Admin Force:** Group creators cannot force-add members without their consent.
 
 ---
 
@@ -528,9 +566,13 @@
       # R11: Delivered strictly to room.members (non-members receive zero packets)
       await self.broadcast({"type": "message", "message": message}, room.members)
   ```
-* **Speaker Notes / Talking Points:**
-  * **Unified Security:** Both 1-on-1 and group chats share the same `authorized_room()` guard.
-  * **Strict Boundary:** If a client hasn't joined the group, attempting to send raises an error, and messages sent by existing members never reach them.
+* **How It Works (Code & Flow):**
+  1. Member sends text to group $\to$ `authorized_room()` checks `session.id in room.members`.
+  2. If user hasn't joined, server rejects with `ValueError: Join this room before using it`.
+  3. If authorized, appends message to history and broadcasts *strictly* to `room.members`.
+* **Key Notes & Highlights:**
+  * **Enforced Boundaries:** Non-members cannot read messages or post to the group.
+  * **Shared Authorization Logic:** Private and group rooms use the exact same `authorized_room()` security gate.
 
 ---
 
@@ -596,9 +638,13 @@
       summary = result["message"]["content"].strip()
       await self.send(session, {"type": "summary", "room": room_id, "text": summary, "model": AI_MODEL})
   ```
-* **Speaker Notes / Talking Points:**
-  * **Privacy-Preserving On-Premise AI:** Inference runs directly on our Oracle server via Ollama; no chat data is sent to paid third-party APIs.
-  * **Non-Blocking Execution:** Runs as an async background task (`create_task`) protected by `asyncio.Lock()`.
+* **How It Works (Code & Flow):**
+  1. User sends `{"type": "summarize", "room": room_id}` $\to$ server collects up to 30 recent room messages.
+  2. Server creates an async task (`create_task`) calling local Ollama (`qwen2.5:0.5b`) over internal HTTP port 11434.
+  3. Server sends `summary_pending` to user, waits for Ollama under `asyncio.Lock`, and returns the 3-bullet summary.
+* **Key Notes & Highlights:**
+  * **100% On-Premise & Private:** Runs directly on our Oracle server via Ollama—no data leaves the VM to third-party APIs.
+  * **Non-Blocking Execution:** Async background task prevents LLM inference delays from blocking active WebSocket messaging.
 
 ---
 
@@ -654,9 +700,13 @@
       room.messages.append(message)
       await self.broadcast({"type": "message", "message": message}, room.members)
   ```
-* **Speaker Notes / Talking Points:**
-  * **Pure Socket Transport:** Files travel strictly inside WebSocket frames as Base64 strings—no `POST /upload` or HTTP multipart forms.
-  * **Model Validation:** Decoding and length checks (1 byte to 256 KiB) occur inside Pydantic field validators.
+* **How It Works (Code & Flow):**
+  1. Client encodes file as Base64 and sends `{"type": "file", "filename": ..., "data": ...}`.
+  2. `FileCmd` validates filename (no `/` or `\`) and decodes Base64 to verify size (1 byte to 256 KiB).
+  3. Server records message with `kind="file"` and broadcasts directly to room members over `/ws`.
+* **Key Notes & Highlights:**
+  * **Pure Socket Transfer:** Files travel strictly inside WebSocket frames as Base64—no `POST /upload` or multipart forms.
+  * **Path Traversal Protection:** Validator rejects filenames with directory traversal characters (`/` or `\`).
 
 ---
 
@@ -699,12 +749,13 @@
                   "read_by": message["read_by"], "delivered_by": message["delivered_by"],
               }, room.members)
   ```
-* **Speaker Notes / Talking Points:**
-  * **Three-Stage Lifecycle:**
-    * *Sent:* Server accepted and retained the message.
-    * *Delivered:* Recipient's browser received the WebSocket frame.
-    * *Read:* Recipient viewed the active chat window.
-  * **Targeted Broadcast:** Receipt updates are pushed exclusively to room members.
+* **How It Works (Code & Flow):**
+  1. Recipient browser receives message frame $\to$ sends `{"type": "received", "ids": [...]}`.
+  2. Recipient views/focuses chat window $\to$ sends `{"type": "read", "ids": [...]}`.
+  3. Server appends `session.id` to `delivered_by` / `read_by` and broadcasts live receipt event to room members.
+* **Key Notes & Highlights:**
+  * **3-Stage Lifecycle:** Real-time tracking from *Sent* $\to$ *Delivered* (double tick) $\to$ *Read* (viewed).
+  * **Targeted Updates:** Receipt events are pushed strictly to participants of that specific room.
 
 ---
 
@@ -744,10 +795,13 @@
       ssh "${opts[@]}" "$target" "bash ~/relay/deploy.sh '$IMAGE'"
       curl --fail https://relay.161.118.238.148.sslip.io/healthz
   ```
-* **Speaker Notes / Talking Points:**
-  * **Official Rubric Bonus:** The assignment criteria explicitly notes: *"Note: Cloud-based deployment is allowed but optional and will be marked as one special point."*
-  * **Automated CI/CD:** Every push to `main` builds a multi-architecture container in GHCR and updates Oracle Cloud over SSH.
-  * **Production TLS:** Traefik dynamically acquires and auto-renews Let's Encrypt certificates for encrypted WSS connections.
+* **How It Works (Code & Flow):**
+  1. Code pushed to `main` branch $\to$ GitHub Actions builds multi-architecture Docker image (AMD64 & ARM64).
+  2. Image pushed to GitHub Container Registry (GHCR) $\to$ Actions connects via SSH to Oracle Cloud VM.
+  3. Runs `deploy.sh` to restart containers behind Traefik reverse proxy and validates `/healthz`.
+* **Key Notes & Highlights:**
+  * **Automated CI/CD:** Fully automated push-to-deploy pipeline with zero manual server intervention.
+  * **Production TLS:** Traefik terminates Let's Encrypt certificates automatically for secure `https` and `wss`.
 
 ---
 
