@@ -498,7 +498,9 @@ class ChatServer:
             if room.kind == "group":
                 room.members.discard(session.id)
                 room.names.pop(session.id, None)
-            if room.kind == "private" and not room.members & self.sessions.keys():
+                if not room.members:
+                    del self.rooms[room_id]
+            elif room.kind == "private" and not room.members & self.sessions.keys():
                 del self.rooms[room_id]
 
         if session.name:

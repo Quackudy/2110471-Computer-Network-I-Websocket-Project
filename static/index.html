@@ -10,96 +10,88 @@
 </head>
 <body>
 
-  <!-- Header -->
-  <header id="app-header">
-    <div class="brand">
-      <h1>Relay</h1>
-    </div>
-    <div id="user-status" hidden>
-      <span>Connected as: <strong id="my-name"></strong></span>
-      <button id="btn-disconnect" type="button">Disconnect</button>
-    </div>
-  </header>
-
-  <!-- Login View (shown before connecting) -->
-  <main id="login-section">
-    <div class="login-box">
-      <h2>Connect</h2>
-      <form id="login-form">
-        <label for="name-input">Username:</label>
-        <div class="input-row">
-          <input id="name-input" type="text" maxlength="24" placeholder="Enter your name..." autocomplete="nickname" required autofocus>
-          <button id="btn-login" type="submit">Connect</button>
-        </div>
-        <p id="login-error" class="error-msg"></p>
-      </form>
-    </div>
-  </main>
-
-  <!-- Main Chat Workspace (shown after connecting) -->
-  <div id="chat-section" hidden>
-    <div class="app-grid">
-
-      <!-- Left Sidebar: Online Users & Groups -->
-      <aside class="sidebar">
-        <section class="sidebar-block">
-          <h3>Online Users (<span id="user-count">0</span>)</h3>
-          <ul id="user-list" class="plain-list"></ul>
-        </section>
-
-        <section class="sidebar-block">
-          <h3>Groups</h3>
-          <form id="create-group-form" class="inline-form">
-            <input id="group-name-input" type="text" maxlength="40" placeholder="New group name..." required>
-            <button type="submit">+ Create</button>
-          </form>
-          <ul id="group-list" class="plain-list"></ul>
-        </section>
-      </aside>
-
-      <!-- Right Main: Active Chat Room -->
-      <main class="chat-area">
-        <div id="no-room-selected" class="empty-state">
-          <p>Select an online user to start a private chat, or join a group.</p>
-        </div>
-
-        <div id="room-view" class="room-container" hidden>
-          <header class="room-header">
-            <div>
-              <h2 id="room-title"></h2>
-              <div id="room-members" class="room-members"></div>
-            </div>
-            <button id="btn-summarize" type="button">AI Summary</button>
-          </header>
-
-          <!-- AI Summary Box -->
-          <div id="summary-box" class="summary-box" hidden>
-            <div class="summary-title">
-              <strong>AI Conversation Catch-up</strong>
-              <button id="btn-close-summary" type="button">[Close]</button>
-            </div>
-            <div id="summary-text" class="summary-text"></div>
-            <small id="summary-model" class="summary-model"></small>
-          </div>
-
-          <!-- Messages -->
-          <div id="message-list" class="message-list" role="log" aria-live="polite"></div>
-
-          <!-- Composer -->
-          <form id="composer" class="composer">
-            <input type="file" id="file-input" hidden>
-            <button type="button" id="btn-attach" title="Attach file up to 256 KiB">Attach</button>
-            <input id="message-input" type="text" maxlength="4000" placeholder="Type a message..." autocomplete="off" required>
-            <button type="submit" id="btn-send">Send</button>
-          </form>
-        </div>
-      </main>
-
-    </div>
+  <!-- Login (Shown before connecting) -->
+  <div id="login-view">
+    <h3 class="login-brand">Relay</h3>
+    <p>Enter a username to connect:</p>
+    <form id="login-form">
+      <input id="name-input" type="text" maxlength="24" placeholder="Username" required autofocus>
+      <button type="submit">Connect</button>
+      <div id="login-error" class="error"></div>
+    </form>
   </div>
 
-  <!-- Toast Message -->
-  <div id="toast" class="toast" hidden></div>
+  <!-- Chat Application (Full Screen 2-Column Layout) -->
+  <div id="chat-view" class="app" hidden>
+    
+    <!-- Left Sidebar: Brand, Identity, Users & Groups -->
+    <aside>
+      <div class="sidebar-top">
+        <strong>Relay</strong>
+        <div id="user-status" class="sidebar-user">
+          <span class="muted"><b id="my-name"></b></span>
+          <button id="btn-disconnect" type="button" title="Disconnect">Exit</button>
+        </div>
+      </div>
+
+      <hr>
+
+      <div>
+        <h4>Online Users (<span id="user-count">0</span>)</h4>
+        <ul id="user-list"></ul>
+      </div>
+
+      <hr>
+
+      <div>
+        <h4>Groups</h4>
+        <form id="group-form">
+          <input id="group-name-input" type="text" maxlength="40" placeholder="New group..." required>
+          <button type="submit">+ Create</button>
+        </form>
+        <ul id="group-list"></ul>
+      </div>
+    </aside>
+
+    <!-- Right Main: Active Room & Messages -->
+    <main>
+      <div id="empty-hint" class="hint">Select an online user or join a group to start reading messages.</div>
+
+      <div id="room-panel" hidden>
+        <div class="room-bar">
+          <div>
+            <b id="room-title"></b>
+            <span id="room-members" class="muted"></span>
+          </div>
+          <button id="btn-summarize" type="button">AI Summary</button>
+        </div>
+
+        <!-- AI Summary -->
+        <div id="summary-box" class="summary-box" hidden>
+          <div class="summary-head">
+            <b>Summary:</b>
+            <button id="btn-close-summary" type="button">[Dismiss]</button>
+          </div>
+          <div id="summary-text"></div>
+          <small id="summary-model" class="muted"></small>
+        </div>
+
+        <!-- Scrollable Messages -->
+        <div id="msg-box" role="log"></div>
+
+        <!-- Composer -->
+        <form id="composer">
+          <input type="file" id="file-input" hidden>
+          <button type="button" id="btn-attach" title="Attach file up to 256 KiB">File</button>
+          <input id="msg-input" type="text" maxlength="4000" placeholder="Type message..." required autocomplete="off">
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </main>
+
+  </div>
+
+  <div id="toast" hidden></div>
 
 </body>
 </html>

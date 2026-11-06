@@ -222,6 +222,8 @@
           if room.kind == "group":
               room.members.discard(session.id)
               room.names.pop(session.id, None)
+              if not room.members:
+                  del self.rooms[room_id]
 
       if session.name:
           await self.broadcast_presence()

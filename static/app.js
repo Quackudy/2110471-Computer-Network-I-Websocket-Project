@@ -17,89 +17,68 @@ const ModelCmd = {
 };
 
 // ==============================================================================
-// 2. Application State
+// 2. Application State & Helpers
 // ==============================================================================
 
 const state = {
   socket: null,
-  me: null,             // { id, name }
-  users: [],            // [{ id, name }]
-  groups: [],           // [{ id, name, members: [{ id, name }] }]
-  rooms: new Map(),     // room_id -> { id, kind, name, members, messages, summary }
+  me: null,
+  users: [],
+  groups: [],
+  rooms: new Map(),
   activeRoomId: null,
-  maxFile: 262144,      // 256 KiB
-  aiModel: "",
-  fileUrls: new Map(),  // msg_id -> Blob URL
+  maxFile: 262144,
+  fileUrls: new Map(),
 };
-
-// ==============================================================================
-// 3. Helpers
-// ==============================================================================
 
 const $ = (id) => document.getElementById(id);
 
-let toastTimer = null;
 function showToast(msg) {
-  const el = $("toast");
-  el.textContent = msg;
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+  const t = $("toast");
+  t.textContent = msg;
+  t.hidden = false;
+  setTimeout(() => { t.hidden = true; }, 3000);
 }
 
-function sendCmd(cmd) {
-  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-    showToast("Disconnected. Please connect again.");
-    return false;
+function send(cmd) {
+  if (state.socket?.readyState === WebSocket.OPEN) {
+    state.socket.send(JSON.stringify(cmd));
+  } else {
+    showToast("Disconnected.");
   }
-  state.socket.send(JSON.stringify(cmd));
-  return true;
 }
 
 // ==============================================================================
-// 4. WebSocket Lifecycle
+// 3. WebSocket Lifecycle & Event Dispatching
 // ==============================================================================
 
 function connect(username) {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const wsUrl = `${protocol}://${location.host}/ws`;
-  const socket = new WebSocket(wsUrl);
+  const socket = new WebSocket(`${protocol}://${location.host}/ws`);
   state.socket = socket;
 
-  $("btn-login").disabled = true;
   $("login-error").textContent = "Connecting...";
 
-  socket.addEventListener("open", () => {
-    // Send register command (R3)
-    sendCmd(ModelCmd.register(username));
-  });
+  socket.addEventListener("open", () => send(ModelCmd.register(username)));
 
   socket.addEventListener("message", (event) => {
     let data;
-    try {
-      data = JSON.parse(event.data);
-    } catch {
-      showToast("Invalid JSON from server.");
-      return;
-    }
+    try { data = JSON.parse(event.data); } catch { return; }
 
     switch (data.type) {
       case "welcome":
         state.me = { id: data.id, name: data.name };
         state.maxFile = data.max_file || 262144;
-        state.aiModel = data.ai_model || "";
         $("my-name").textContent = data.name;
-        $("login-section").hidden = true;
-        $("chat-section").hidden = false;
+        $("login-view").hidden = true;
+        $("chat-view").hidden = false;
         $("user-status").hidden = false;
         $("login-error").textContent = "";
-        $("btn-login").disabled = false;
         break;
 
       case "error":
         if (!state.me) {
           $("login-error").textContent = data.message;
-          $("btn-login").disabled = false;
           socket.close();
         } else {
           showToast(data.message);
@@ -114,176 +93,118 @@ function connect(username) {
         break;
 
       case "room":
-        state.rooms.set(data.room.id, {
-          ...data.room,
-          messages: data.messages || [],
-          summary: null,
-        });
+        state.rooms.set(data.room.id, { ...data.room, messages: data.messages || [], summary: null });
         selectRoom(data.room.id);
         renderSidebar();
         break;
 
-      case "message":
-        handleIncomingMessage(data.message);
+      case "message": {
+        const room = state.rooms.get(data.message.room);
+        if (!room) return;
+        if (!room.messages.some((m) => m.id === data.message.id)) {
+          room.messages.push(data.message);
+        }
+        if (state.me && data.message.sender !== state.me.id) {
+          send(ModelCmd.received(room.id, [data.message.id]));
+        }
+        if (state.activeRoomId === room.id) {
+          renderMessages();
+          markRead();
+        }
         break;
+      }
 
-      case "receipt":
-        handleReceipt(data);
+      case "receipt": {
+        const room = state.rooms.get(data.room);
+        const msg = room?.messages.find((m) => m.id === data.id);
+        if (msg) {
+          msg.read_by = data.read_by;
+          msg.delivered_by = data.delivered_by;
+          if (state.activeRoomId === data.room) renderMessages();
+        }
         break;
+      }
 
       case "summary_pending":
-        handleSummary(data.room, "Generating AI summary with Ollama...", true);
+      case "summary": {
+        const room = state.rooms.get(data.room);
+        if (!room) return;
+        room.summary = { text: data.type === "summary_pending" ? "Summarizing with Ollama..." : data.text, model: data.model };
+        if (state.activeRoomId === data.room) renderSummary();
         break;
-
-      case "summary":
-        handleSummary(data.room, data.text, false, data.model);
-        break;
+      }
     }
   });
 
   socket.addEventListener("close", () => {
     state.me = null;
     state.activeRoomId = null;
-    $("login-section").hidden = false;
-    $("chat-section").hidden = true;
+    $("login-view").hidden = false;
+    $("chat-view").hidden = true;
     $("user-status").hidden = true;
-    $("btn-login").disabled = false;
-    if ($("login-error").textContent === "Connecting...") {
-      $("login-error").textContent = "Disconnected from server.";
-    }
   });
-
-  socket.addEventListener("error", () => {
-    $("login-error").textContent = "Connection error. Is the server running?";
-    $("btn-login").disabled = false;
-  });
-}
-
-// ==============================================================================
-// 5. Message & Receipt Handling
-// ==============================================================================
-
-function handleIncomingMessage(msg) {
-  const room = state.rooms.get(msg.room);
-  if (!room) return;
-
-  if (!room.messages.some((m) => m.id === msg.id)) {
-    room.messages.push(msg);
-  }
-
-  // Auto-send delivery receipt if from someone else
-  if (state.me && msg.sender !== state.me.id) {
-    sendCmd(ModelCmd.received(room.id, [msg.id]));
-  }
-
-  if (state.activeRoomId === room.id) {
-    renderMessages();
-    markRead();
-  }
-}
-
-function handleReceipt(data) {
-  const room = state.rooms.get(data.room);
-  if (!room) return;
-  const msg = room.messages.find((m) => m.id === data.id);
-  if (msg) {
-    msg.read_by = data.read_by || [];
-    msg.delivered_by = data.delivered_by || [];
-    if (state.activeRoomId === data.room) {
-      renderMessages();
-    }
-  }
 }
 
 function markRead() {
   if (document.hidden || !document.hasFocus() || !state.activeRoomId) return;
   const room = state.rooms.get(state.activeRoomId);
   if (!room) return;
-
-  const unreadIds = room.messages
-    .filter((m) => m.sender !== state.me.id && !m.read_by.includes(state.me.id))
+  const unread = room.messages
+    .filter((m) => m.sender !== state.me?.id && !m.read_by.includes(state.me?.id))
     .map((m) => m.id);
-
-  if (unreadIds.length > 0) {
-    sendCmd(ModelCmd.read(room.id, unreadIds));
-  }
-}
-
-function handleSummary(roomId, text, isPending, model) {
-  const room = state.rooms.get(roomId);
-  if (!room) return;
-  room.summary = { text, isPending, model };
-  if (state.activeRoomId === roomId) {
-    renderSummary();
-  }
+  if (unread.length) send(ModelCmd.read(room.id, unread));
 }
 
 // ==============================================================================
-// 6. UI Renderers
+// 4. UI Renderers
 // ==============================================================================
 
 function renderSidebar() {
-  // 1. Users list
   $("user-count").textContent = state.users.length;
   const userList = $("user-list");
   userList.replaceChildren();
 
-  for (const user of state.users) {
-    const isMe = state.me && user.id === state.me.id;
+  for (const u of state.users) {
+    const isMe = u.id === state.me?.id;
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "user-row";
-
-    const nameSpan = document.createElement("span");
-    nameSpan.textContent = user.name;
-    btn.appendChild(nameSpan);
-
+    btn.className = "user-btn";
+    btn.textContent = isMe ? `${u.name} (you)` : u.name;
     if (isMe) {
-      const you = document.createElement("span");
-      you.className = "badge-you";
-      you.textContent = "you";
-      btn.appendChild(you);
       btn.disabled = true;
     } else {
-      btn.addEventListener("click", () => {
-        sendCmd(ModelCmd.openPrivate(user.id));
-      });
+      btn.addEventListener("click", () => send(ModelCmd.openPrivate(u.id)));
     }
-
     li.appendChild(btn);
     userList.appendChild(li);
   }
 
-  // 2. Groups list
   const groupList = $("group-list");
   groupList.replaceChildren();
 
-  for (const group of state.groups) {
-    const isJoined = group.members.some((m) => state.me && m.id === state.me.id);
+  for (const g of state.groups) {
+    const joined = g.members.some((m) => m.id === state.me?.id);
     const li = document.createElement("li");
     const row = document.createElement("div");
-    row.className = `group-row${group.id === state.activeRoomId ? " active" : ""}`;
+    row.className = `group-row${g.id === state.activeRoomId ? " active" : ""}`;
 
     const label = document.createElement("span");
-    label.textContent = `# ${group.name} (${group.members.length})`;
-    label.style.cursor = isJoined ? "pointer" : "default";
+    label.textContent = `# ${g.name} (${g.members.length})`;
     row.appendChild(label);
 
-    if (!isJoined) {
+    if (!joined) {
       const joinBtn = document.createElement("button");
       joinBtn.type = "button";
-      joinBtn.className = "btn-join";
       joinBtn.textContent = "Join";
       joinBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        sendCmd(ModelCmd.joinGroup(group.id));
+        send(ModelCmd.joinGroup(g.id));
       });
       row.appendChild(joinBtn);
     } else {
-      row.addEventListener("click", () => {
-        selectRoom(group.id);
-      });
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => selectRoom(g.id));
     }
 
     li.appendChild(row);
@@ -293,187 +214,140 @@ function renderSidebar() {
 
 function selectRoom(roomId) {
   state.activeRoomId = roomId;
-  $("no-room-selected").hidden = true;
-  $("room-view").hidden = false;
-
+  $("empty-hint").hidden = true;
+  $("room-panel").hidden = false;
   renderHeader();
   renderSummary();
   renderMessages();
   markRead();
-  $("message-input").focus();
+  $("msg-input").focus();
 }
 
 function renderHeader() {
   const room = state.rooms.get(state.activeRoomId);
   if (!room) return;
-
-  const title = room.kind === "group"
-    ? `# ${room.name}`
-    : room.members.find((m) => m.id !== state.me.id)?.name || "Private chat";
-
-  $("room-title").textContent = title;
-  const memberList = room.members
-    .map((m) => (m.id === state.me.id ? `${m.name} (you)` : m.name))
-    .join(", ");
-  $("room-members").textContent = `Members: ${memberList}`;
+  $("room-title").textContent = room.kind === "group" ? `# ${room.name}` : room.members.find((m) => m.id !== state.me.id)?.name || "Private";
+  $("room-members").textContent = ` [${room.members.map((m) => m.id === state.me.id ? `${m.name}*` : m.name).join(", ")}]`;
 }
 
 function renderSummary() {
   const room = state.rooms.get(state.activeRoomId);
   const box = $("summary-box");
-  if (!room || !room.summary) {
-    box.hidden = true;
-    return;
-  }
+  if (!room?.summary) { box.hidden = true; return; }
   box.hidden = false;
   $("summary-text").textContent = room.summary.text;
-  $("summary-model").textContent = room.summary.model ? `Model: ${room.summary.model}` : "";
+  $("summary-model").textContent = room.summary.model ? `(${room.summary.model})` : "";
 }
 
-function getFileUrl(msgId, filename, base64Data) {
-  if (state.fileUrls.has(msgId)) return state.fileUrls.get(msgId);
-  const binary = atob(base64Data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  const blob = new Blob([bytes], { type: "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
-  state.fileUrls.set(msgId, url);
+function getFileUrl(id, b64) {
+  if (state.fileUrls.has(id)) return state.fileUrls.get(id);
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([arr]));
+  state.fileUrls.set(id, url);
   return url;
 }
 
 function renderMessages() {
   const room = state.rooms.get(state.activeRoomId);
-  const list = $("message-list");
-  list.replaceChildren();
+  const box = $("msg-box");
+  box.replaceChildren();
   if (!room) return;
 
-  for (const msg of room.messages) {
-    const isMine = state.me && msg.sender === state.me.id;
-    const item = document.createElement("div");
-    item.className = `msg-item${isMine ? " mine" : ""}`;
+  for (const m of room.messages) {
+    const isMine = m.sender === state.me?.id;
+    const line = document.createElement("div");
+    line.className = `msg-line${isMine ? " mine" : ""}`;
 
-    const top = document.createElement("div");
-    top.className = "msg-top";
-    const sender = document.createElement("strong");
-    sender.textContent = isMine ? "You" : msg.name;
     const time = document.createElement("span");
-    time.textContent = new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    top.append(sender, time);
-    item.appendChild(top);
+    time.className = "time";
+    time.textContent = new Date(m.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-    const content = document.createElement("div");
-    content.className = "msg-content";
+    const author = document.createElement("b");
+    author.textContent = isMine ? "You: " : `${m.name}: `;
 
-    if (msg.kind === "file") {
-      const link = document.createElement("a");
-      link.className = "file-link";
-      link.href = getFileUrl(msg.id, msg.filename, msg.data);
-      link.download = msg.filename;
-      link.textContent = `📎 ${msg.filename} (${(msg.bytes / 1024).toFixed(1)} KiB)`;
-      content.appendChild(link);
+    line.append(time, author);
+
+    if (m.kind === "file") {
+      const a = document.createElement("a");
+      a.href = getFileUrl(m.id, m.data);
+      a.download = m.filename;
+      a.textContent = `[File: ${m.filename} (${(m.bytes / 1024).toFixed(1)} KiB)]`;
+      line.appendChild(a);
     } else {
-      content.textContent = msg.text;
+      line.appendChild(document.createTextNode(m.text));
     }
-    item.appendChild(content);
 
     if (isMine) {
-      const receipt = document.createElement("span");
-      receipt.className = "msg-receipt";
-      if (msg.read_by && msg.read_by.length > 0) {
-        receipt.textContent = "✓✓ Read";
-        receipt.classList.add("read");
-      } else if (msg.delivered_by && msg.delivered_by.length > 0) {
-        receipt.textContent = "✓✓ Delivered";
-      } else {
-        receipt.textContent = "✓ Sent";
-      }
-      item.appendChild(receipt);
+      const rec = document.createElement("span");
+      rec.className = `receipt${m.read_by?.length ? " read" : ""}`;
+      rec.textContent = m.read_by?.length ? "✓✓ Read" : (m.delivered_by?.length ? "✓✓ Delivered" : "✓ Sent");
+      line.appendChild(rec);
     }
 
-    list.appendChild(item);
+    box.appendChild(line);
   }
-
-  list.scrollTop = list.scrollHeight;
+  box.scrollTop = box.scrollHeight;
 }
 
 // ==============================================================================
-// 7. Event Listeners
+// 5. Event Listeners
 // ==============================================================================
 
-// Login
 $("login-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const name = $("name-input").value.trim();
   if (name) connect(name);
 });
 
-// Send message
 $("composer").addEventListener("submit", (e) => {
   e.preventDefault();
-  const text = $("message-input").value.trim();
+  const inp = $("msg-input");
+  const text = inp.value.trim();
   if (text && state.activeRoomId) {
-    if (sendCmd(ModelCmd.message(state.activeRoomId, text))) {
-      $("message-input").value = "";
-    }
+    send(ModelCmd.message(state.activeRoomId, text));
+    inp.value = "";
   }
 });
 
-// Create group
-$("create-group-form").addEventListener("submit", (e) => {
+$("group-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  const input = $("group-name-input");
-  const name = input.value.trim();
+  const inp = $("group-name-input");
+  const name = inp.value.trim();
   if (name) {
-    sendCmd(ModelCmd.createGroup(name));
-    input.value = "";
+    send(ModelCmd.createGroup(name));
+    inp.value = "";
   }
 });
 
-// AI Summary
 $("btn-summarize").addEventListener("click", () => {
-  if (state.activeRoomId) {
-    sendCmd(ModelCmd.summarize(state.activeRoomId));
-  }
+  if (state.activeRoomId) send(ModelCmd.summarize(state.activeRoomId));
 });
 
 $("btn-close-summary").addEventListener("click", () => {
   const room = state.rooms.get(state.activeRoomId);
-  if (room) {
-    room.summary = null;
-    renderSummary();
-  }
+  if (room) { room.summary = null; renderSummary(); }
 });
 
-// File attach
-$("btn-attach").addEventListener("click", () => {
-  $("file-input").click();
-});
+$("btn-attach").addEventListener("click", () => $("file-input").click());
 
-$("file-input").addEventListener("change", async () => {
+$("file-input").addEventListener("change", () => {
   const file = $("file-input").files[0];
   $("file-input").value = "";
   if (!file || !state.activeRoomId) return;
-
   if (file.size > state.maxFile) {
-    showToast(`File too large. Max is ${(state.maxFile / 1024).toFixed(0)} KiB.`);
+    showToast(`File too large (max 256 KiB).`);
     return;
   }
-
   const reader = new FileReader();
   reader.onload = () => {
-    const base64Data = reader.result.split(",")[1];
-    sendCmd(ModelCmd.file(state.activeRoomId, file.name, base64Data));
+    send(ModelCmd.file(state.activeRoomId, file.name, reader.result.split(",")[1]));
   };
   reader.readAsDataURL(file);
 });
 
-// Disconnect
-$("btn-disconnect").addEventListener("click", () => {
-  state.socket?.close();
-});
+$("btn-disconnect").addEventListener("click", () => state.socket?.close());
 
-// Window focus for read receipts
 document.addEventListener("visibilitychange", markRead);
 window.addEventListener("focus", markRead);
