@@ -14,6 +14,8 @@ A browser chat application for **2110471 Computer Network I**, built with an asy
 * **Clean Dispatcher Pattern:** A central `dispatch()` method routes commands to focused handler functions, catching validation errors centrally and returning clean error frames to the client.
 * **Lightweight In-Memory State:** Rooms and messages live in memory with automatic ring-buffering (`collections.deque(maxlen=100)`), avoiding database locking and maintaining high performance.
 
+> 📖 **Deep-Dive Architecture & Lifecycle Guide:** For an end-to-end walkthrough covering the WebSocket handshake, room routing, 3-stage receipt progression, Base64 file transfer, Ollama AI locking, and disconnect cleanup with sequence diagrams, see [docs/how_it_works.md](docs/how_it_works.md).
+
 ---
 
 ## Run Locally
@@ -108,12 +110,13 @@ Each code push to **main** triggers the GitHub Actions workflow (`.github/workfl
 
 ---
 
-## Presentation & Demonstration
+## Documentation & Presentation
 
-The complete **20-slide implementation explanation** is fully documented in [docs/slide_preparation.md](docs/slide_preparation.md). It matches the instructor's slide template page-by-page, providing:
-* Engineering-grade **Generative AI Prompts** used for each requirement.
-* Concise **Code Snapshots** designed to fit presentation slide code blocks.
-* **Speaker Notes & Talking Points** for the live demonstration.
+* **System Execution & Protocol Walkthrough:** [docs/how_it_works.md](docs/how_it_works.md) details every lifecycle from connection handshake to 3-stage receipt progression and Ollama AI locking with sequence diagrams.
+* **20-Slide Implementation Presentation:** Fully documented in [docs/slide_preparation.md](docs/slide_preparation.md). It matches the instructor's slide template page-by-page, providing:
+  * Engineering-grade **Generative AI Prompts** used for each requirement.
+  * Concise **Code Snapshots** designed to fit presentation slide code blocks.
+  * **Speaker Notes & Talking Points** for the live demonstration.
 
 ### Live Demo Checklist
 1. **R1:** Open `https://relay.161.118.238.148.sslip.io` on **two different physical laptops**.
