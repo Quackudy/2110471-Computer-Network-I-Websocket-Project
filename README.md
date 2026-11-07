@@ -14,7 +14,7 @@ A browser chat application for **2110471 Computer Network I**, built with an asy
 * **Clean Dispatcher Pattern:** A central `dispatch()` method routes commands to focused handler functions, catching validation errors centrally and returning clean error frames to the client.
 * **Lightweight In-Memory State:** Rooms and messages live in memory with automatic ring-buffering (`collections.deque(maxlen=100)`), avoiding database locking and maintaining high performance.
 
-> 📖 **Deep-Dive Architecture & Lifecycle Guide:** For an end-to-end walkthrough covering the WebSocket handshake, room routing, 3-stage receipt progression, Base64 file transfer, Ollama AI locking, and disconnect cleanup with sequence diagrams, see [docs/how_it_works.md](docs/how_it_works.md).
+> 📖 **Deep-Dive Architecture & Lifecycle Guide:** For an end-to-end walkthrough covering the WebSocket handshake, room routing, 3-stage receipt progression, Base64 file transfer, AI locking, and disconnect cleanup with sequence diagrams, see [docs/how_it_works.md](docs/how_it_works.md).
 
 ---
 
@@ -42,7 +42,7 @@ Configuration defaults can be customized via `.env` (refer to `.env.example`).
 
 ## AI Catch-Up Summaries
 
-The server integrates with **Qwen2.5 0.5B Instruct**, a compact open-weights language model served by **Ollama**. Model inference runs directly on the Oracle server instance inside a private container network—no paid APIs or third-party inference services are used. [Model reference](https://ollama.com/library/qwen2.5:0.5b), [upstream model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct), [Ollama API](https://docs.ollama.com/api/chat).
+The server uses **Gemini 3.8 Flash** for summaries when `GEMINI_API_KEY` is configured. Google currently lists this model on its [free tier](https://ai.google.dev/gemini-api/docs/pricing), subject to usage limits. Create a key in [Google AI Studio](https://aistudio.google.com/app/apikey), then add it as the repository's GitHub Actions secret `GEMINI_API_KEY` for Oracle deployment. Keep the key out of the browser and repository. Summarized chat text is sent to Google when this option is enabled. Without a key, the existing local **Ollama / Qwen2.5 0.5B** summary remains available.
 
 To run the full stack (server + Ollama) locally with Docker:
 
@@ -71,7 +71,7 @@ Open <http://localhost:8080>. The first startup pulls the Ollama container and d
 | **R11** | Group messages accepted from and delivered to room members only | `authorized_room`, `handle_message` |
 
 ### Part 3 Special Points (4 Points)
-1. **AI Chat Summarization (1.0 pt):** Local Qwen2.5 0.5B Instruct via Ollama (`SummarizeCmd`, `execute_summarize`).
+1. **AI Chat Summarization (1.0 pt):** Gemini 3.8 Flash with an API key, or local Qwen2.5 0.5B via Ollama (`SummarizeCmd`, `execute_summarize`).
 2. **Socket File Sharing (1.0 pt):** Base64 file transfer (up to 256 KiB) strictly through WebSocket frames (`FileCmd`, `handle_file`).
 3. **Delivery & Read Receipts (1.0 pt):** Real-time status tracking (Sent $\to$ Delivered $\to$ Read) broadcast to participants (`ReceiptCmd`, `handle_receipt`).
 4. **Cloud Deployment (1.0 pt):** Live Oracle Cloud instance with Docker, Traefik TLS proxy, and automated GitHub Actions CI/CD. *(Explicitly noted in the rubric: "Cloud-based deployment is allowed but optional and will be marked as one special point")*.
@@ -85,7 +85,8 @@ flowchart LR
   A[Browser client — physical computer 1] <-->|HTTPS / WSS, TCP 443| T[Traefik TLS proxy — Oracle]
   B[Browser client — physical computer 2] <-->|HTTPS / WSS, TCP 443| T
   T <-->|WebSocket, TCP 8080 — container network| S[Python aiohttp server]
-  S -->|HTTP, TCP 11434 — private container network| AI[Ollama / Qwen2.5]
+  S -->|HTTPS when key configured| GAI[Gemini API]
+  S -->|Otherwise internal HTTP, TCP 11434| AI[Ollama / Qwen2.5]
   G[GitHub Actions] -->|Publish amd64 + arm64 image| R[GHCR]
   G -->|SSH, TCP 22| O[Oracle deployment script]
   R -->|Pull commit-tagged image| O
@@ -98,7 +99,7 @@ flowchart LR
 * **JSON:** Application-layer event format inside WebSocket frames.
 * **TLS:** Encrypts public traffic between browsers and the Traefik proxy.
 * **SSH:** Authenticates deployment connections from GitHub Actions to Oracle Cloud.
-* **Internal HTTP:** Used strictly between the Python server and the Ollama container for AI inference (no public port exposed).
+* **AI request:** When configured, the Python server calls Gemini over HTTPS; otherwise it calls Ollama over the private Docker network.
 
 ---
 
@@ -112,7 +113,7 @@ Each code push to **main** triggers the GitHub Actions workflow (`.github/workfl
 
 ## Documentation & Presentation
 
-* **System Execution & Protocol Walkthrough:** [docs/how_it_works.md](docs/how_it_works.md) details every lifecycle from connection handshake to 3-stage receipt progression and Ollama AI locking with sequence diagrams.
+* **System Execution & Protocol Walkthrough:** [docs/how_it_works.md](docs/how_it_works.md) details every lifecycle from connection handshake to 3-stage receipt progression and AI locking with sequence diagrams.
 * **20-Slide Implementation Presentation:** Fully documented in [docs/slide_preparation.md](docs/slide_preparation.md). It matches the instructor's slide template page-by-page, providing:
   * Engineering-grade **Generative AI Prompts** used for each requirement.
   * Concise **Code Snapshots** designed to fit presentation slide code blocks.
@@ -127,7 +128,7 @@ Each code push to **main** triggers the GitHub Actions workflow (`.github/workfl
 6. **Special Features:**
    * Transfer a file (`notes.txt` or an image) via WebSocket.
    * Observe Sent $\to$ Delivered $\to$ Read receipt status markers.
-   * Click **Summarize** in an active conversation to demonstrate local Qwen2.5 AI summarization.
+   * Click **Summarize** in an active conversation to demonstrate Gemini when configured, or the local Qwen2.5 fallback.
    * Point out the live HTTPS URL, Traefik TLS certificate, and the automated GitHub Actions pipeline.
 
 ---

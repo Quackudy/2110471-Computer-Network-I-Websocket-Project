@@ -64,6 +64,7 @@ jobs:
           ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
           ORACLE_KNOWN_HOSTS: ${{ secrets.ORACLE_KNOWN_HOSTS }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           IMAGE: ${{ needs.publish.outputs.image }}
         run: |
           set -euo pipefail
@@ -77,6 +78,6 @@ jobs:
           ssh "${opts[@]}" "$target" 'mkdir -p ~/relay'
           scp "${opts[@]}" compose.yml compose.oracle.yml "$target:relay/"
           scp "${opts[@]}" scripts/deploy.sh "$target:relay/deploy.sh"
-          printf '%s\n' "$GHCR_TOKEN" | ssh "${opts[@]}" "$target" "bash ~/relay/deploy.sh '$IMAGE'"
+          printf '%s\n%s\n' "$GHCR_TOKEN" "$GEMINI_API_KEY" | ssh "${opts[@]}" "$target" "bash ~/relay/deploy.sh '$IMAGE'"
       - name: Verify public HTTPS
         run: curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 https://relay.161.118.238.148.sslip.io/healthz

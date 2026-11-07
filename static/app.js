@@ -161,7 +161,7 @@ function connect(username) {
         const room = state.rooms.get(data.room);
         if (data.type === "summary") setSummarizeBusy(false);
         if (!room) return;
-        room.summary = { text: data.type === "summary_pending" ? "Summarizing with Ollama..." : data.text, model: data.model };
+        room.summary = { text: data.type === "summary_pending" ? "Summarizing..." : data.text, model: data.model };
         if (state.activeRoomId === data.room) renderSummary();
         break;
       }

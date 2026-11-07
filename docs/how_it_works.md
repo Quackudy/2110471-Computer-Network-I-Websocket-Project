@@ -1,6 +1,6 @@
 # Relay — System Architecture & Execution Lifecycle
 
-This document provides a comprehensive end-to-end walkthrough of how **Relay** operates—from the initial browser connection and WebSocket handshake, through room routing and messaging lifecycles, to local AI summarization and connection teardown.
+This document provides a comprehensive end-to-end walkthrough of how **Relay** operates—from the initial browser connection and WebSocket handshake, through room routing and messaging lifecycles, to AI summarization and connection teardown.
 
 ---
 
@@ -16,9 +16,9 @@ Relay is built on a clean **Client-Server model** communicating exclusively over
          v
 [ Python Backend (aiohttp + Pydantic v2) ]
          |
-         |  Internal Docker HTTP Network (Port 11434)
+         |  HTTPS with Gemini key; otherwise internal Docker HTTP (Port 11434)
          v
-[ Ollama Local AI (Qwen2.5 0.5B Instruct) ]
+[ Gemini 3.8 Flash / Ollama Qwen2.5 fallback ]
 ```
 
 * **Frontend (`static/app.js`):** Constructs strongly-typed commands via `ModelCmd` and dispatches them over the WebSocket. UI updates are event-driven and DOM updates are applied surgically (e.g. `appendMessage`, in-place receipt updates).
@@ -218,33 +218,28 @@ All file transfers take place strictly inside WebSocket frames without third-par
 
 ---
 
-### Phase 5: Local AI Chat Summarization (Special 1)
+### Phase 5: AI Chat Summarization (Special 1)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Alice as Alice
     participant S as Server
-    participant AI as Ollama (Qwen2.5 0.5B)
-    actor Bob as Bob
+    participant AI as Gemini API or Ollama fallback
 
     Alice->>S: SummarizeCmd {"type": "summarize", "room": "room-1"}
     Note over S: Acquire asyncio.Lock()<br/>If locked: reject with "AI is busy"
     S-->>Alice: Event {"type": "summary_pending", "text": "Summarizing..."}
-    S-->>Bob: Event {"type": "summary_pending", "text": "Summarizing..."}
-    
-    S->>AI: POST /api/chat (Private Docker Network)<br/>{"model": "qwen2.5:0.5b", "messages": [...]}
-    Note over AI: Local CPU inference<br/>Generates 2-3 bullet summary
-    AI-->>S: JSON {"message": {"content": "Summary text..."}}
+    S->>AI: POST Gemini generateContent over HTTPS<br/>or Ollama /api/chat over private network
+    AI-->>S: JSON response containing summary text
     
     Note over S: Release asyncio.Lock()
-    S-->>Alice: Event {"type": "summary", "text": "...", "model": "qwen2.5:0.5b"}
-    S-->>Bob: Event {"type": "summary", "text": "...", "model": "qwen2.5:0.5b"}
+    S-->>Alice: Event {"type": "summary", "text": "...", "model": "..."}
 ```
 
-1. **Concurrency Control:** Server guards local AI inference using `self.ai_lock = asyncio.Lock()`. If a user clicks summarize while another task is running, the server rejects it gracefully (*"AI is busy. Try again shortly."*), protecting server memory and CPU.
-2. **Private Container Network:** The Python server communicates with Ollama via internal HTTP (`http://ollama:11434/api/chat`). No external cloud APIs (e.g. OpenAI, Anthropic) are used.
-3. **Broadcast:** Once generated, the summary is delivered to all participants in the room via `{"type": "summary", ...}` and pinned to the top of the chat panel.
+1. **Concurrency Control:** Server uses `self.ai_lock = asyncio.Lock()` to allow one summary request at a time.
+2. **Provider:** With `GEMINI_API_KEY`, the server sends recent chat text to Gemini over HTTPS. Without it, the server uses Ollama via internal HTTP (`http://ollama:11434/api/chat`).
+3. **Delivery:** The summary is sent to the requesting client via `{"type": "summary", ...}` and displayed in the chat panel.
 
 ---
 

@@ -9,6 +9,8 @@ case "$image" in
 esac
 # The workflow passes its short-lived token on stdin, never in an argument or file.
 IFS= read -r registry_token
+IFS= read -r GEMINI_API_KEY
+export GEMINI_API_KEY
 export DOCKER_CONFIG
 DOCKER_CONFIG=$(mktemp -d)
 trap 'rm -rf "$DOCKER_CONFIG"' EXIT
