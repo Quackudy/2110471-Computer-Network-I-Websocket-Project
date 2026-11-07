@@ -163,6 +163,17 @@ function connect(username) {
         break;
       }
 
+      case "summary_error": {
+        setSummarizeBusy(false);
+        showToast(data.message || "AI is unavailable. Please try again.");
+        const room = state.rooms.get(data.room);
+        if (room) {
+          room.summary = null;
+          if (state.activeRoomId === data.room) renderSummary();
+        }
+        break;
+      }
+
       case "summary_pending":
       case "summary": {
         const room = state.rooms.get(data.room);
