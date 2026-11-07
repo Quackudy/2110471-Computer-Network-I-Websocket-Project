@@ -117,6 +117,12 @@ function connect(username) {
       case "state":
         state.users = data.users || [];
         state.groups = data.groups || [];
+        for (const group of state.groups) {
+          const room = state.rooms.get(group.id);
+          if (room?.kind === "group") {
+            room.members = group.members;
+          }
+        }
         renderSidebar();
         if (state.activeRoomId) renderHeader();
         break;
