@@ -446,11 +446,14 @@ class ChatServer:
                                 headers = {"x-goog-api-key": GEMINI_API_KEY}
                             else:
                                 url = f"{AI_URL}/api/chat"
+                                local_instruction = ("Write a one-sentence factual recap for someone who missed these messages. "
+                                                     "Include agreed plans and assigned tasks. "
+                                                     "Do not describe the speakers or repeat questions. Do not invent facts.")
                                 payload = {
                                     "model": model, "stream": False,
-                                    "messages": [{"role": "system", "content": instruction},
+                                    "messages": [{"role": "system", "content": local_instruction},
                                                  {"role": "user", "content": prompt}],
-                                    "options": {"temperature": 0.2, "num_predict": 240, "num_ctx": 4096},
+                                    "options": {"temperature": 0, "num_predict": 160, "num_ctx": 4096},
                                 }
                                 headers = {}
                             async with http_client.post(url, json=payload, headers=headers) as response:

@@ -232,6 +232,7 @@ function renderSidebar() {
     const li = document.createElement("li");
     const row = document.createElement("div");
     row.className = `group-row${g.id === state.activeRoomId ? " active" : ""}`;
+    row.title = g.members.length ? `Members: ${g.members.map((m) => m.name).join(", ")}` : "No members yet";
 
     const label = document.createElement("span");
     label.textContent = `# ${g.name} (${g.members.length})`;

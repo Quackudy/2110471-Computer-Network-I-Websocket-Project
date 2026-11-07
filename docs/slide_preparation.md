@@ -592,7 +592,7 @@
 ---
 
 ### Slide 17: Special Point 1: AI Chat Catch-up Summaries (AI Feature)
-* **Description:** Catch up on room discussions with a 3-bullet summary using a user-selected Gemini or local Ollama provider. Gemini failure automatically retries with Ollama.
+* **Description:** Catch up on room discussions with a user-selected Gemini or local Ollama summary. Gemini failure automatically retries with Ollama; the local prompt asks for a one-sentence factual recap.
 * **AI Model:** Gemini 3.5 Flash-Lite via the free-tier API with `GEMINI_API_KEY`; Qwen2.5 0.5B Instruct via Ollama remains the no-key fallback. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 * **Generative AI Prompt:**
   ```text
@@ -642,7 +642,7 @@
 * **How It Works (Code & Flow):**
   1. User sends `{"type": "summarize", "room": room_id}` $\to$ server collects up to 30 recent room messages.
   2. Server creates an async task (`create_task`) calling the selected provider. Gemini calls use HTTPS; local Qwen calls use internal HTTP. Gemini failures retry with local Qwen.
-  3. Server sends `summary_pending` to the requesting user, waits under `asyncio.Lock`, and returns the 3-bullet summary.
+  3. Server sends `summary_pending` to the requesting user, waits under `asyncio.Lock`, and returns the summary.
 * **Key Notes & Highlights:**
   * **Data Flow:** Gemini mode sends recent room text to Google; Ollama mode keeps inference on the Oracle server.
   * **Non-Blocking Execution:** Async background task prevents LLM inference delays from blocking active WebSocket messaging.

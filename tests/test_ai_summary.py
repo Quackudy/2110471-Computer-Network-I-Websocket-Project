@@ -66,6 +66,20 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         await self.check_summary("secret", "ollama", [(200, {"message": {"content": "Local summary"}})],
                                  ["/api/chat"], "qwen-test", "Local summary")
 
+    async def test_local_prompt_avoids_speaker_descriptions(self):
+        client = FakeClient([(200, {"message": {"content": "Friday at 10 am."}})])
+        chat = server.ChatServer()
+
+        async def capture(_session, _event):
+            pass
+
+        with patch.object(server, "HttpClient", return_value=client), patch.object(chat, "send", capture):
+            await chat.execute_summarize(object(), "room-1", ["d: Friday at 10 am"], "ollama")
+
+        request = client.requests[0][1]["json"]
+        self.assertIn("Do not describe the speakers", request["messages"][0]["content"])
+        self.assertEqual(request["options"]["temperature"], 0)
+
     async def test_gemini_failure_falls_back_to_ollama(self):
         await self.check_summary("secret", "gemini", [(503, {}), (200, {"message": {"content": "Fallback summary"}})],
                                  [":generateContent", "/api/chat"], "qwen-test", "Fallback summary")
