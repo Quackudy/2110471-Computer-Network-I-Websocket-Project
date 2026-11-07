@@ -42,7 +42,7 @@ Configuration defaults can be customized via `.env` (refer to `.env.example`).
 
 ## AI Catch-Up Summaries
 
-The server uses **Gemini 3.8 Flash** for summaries when `GEMINI_API_KEY` is configured. Google currently lists this model on its [free tier](https://ai.google.dev/gemini-api/docs/pricing), subject to usage limits. Create a key in [Google AI Studio](https://aistudio.google.com/app/apikey), then add it as the repository's GitHub Actions secret `GEMINI_API_KEY` for Oracle deployment. Keep the key out of the browser and repository. Summarized chat text is sent to Google when this option is enabled. Without a key, the existing local **Ollama / Qwen2.5 0.5B** summary remains available.
+The server uses **Gemini 3.5 Flash-Lite** for summaries when `GEMINI_API_KEY` is configured. Google currently lists this model on its [free tier](https://ai.google.dev/gemini-api/docs/pricing), subject to usage limits. Create a key in [Google AI Studio](https://aistudio.google.com/app/apikey), then add it as the repository's GitHub Actions secret `GEMINI_API_KEY` for Oracle deployment. Keep the key out of the browser and repository. Summarized chat text is sent to Google when this option is enabled. Without a key, the existing local **Ollama / Qwen2.5 0.5B** summary remains available.
 
 To run the full stack (server + Ollama) locally with Docker:
 
@@ -71,7 +71,7 @@ Open <http://localhost:8080>. The first startup pulls the Ollama container and d
 | **R11** | Group messages accepted from and delivered to room members only | `authorized_room`, `handle_message` |
 
 ### Part 3 Special Points (4 Points)
-1. **AI Chat Summarization (1.0 pt):** Gemini 3.8 Flash with an API key, or local Qwen2.5 0.5B via Ollama (`SummarizeCmd`, `execute_summarize`).
+1. **AI Chat Summarization (1.0 pt):** Gemini 3.5 Flash-Lite with an API key, or local Qwen2.5 0.5B via Ollama (`SummarizeCmd`, `execute_summarize`).
 2. **Socket File Sharing (1.0 pt):** Base64 file transfer (up to 256 KiB) strictly through WebSocket frames (`FileCmd`, `handle_file`).
 3. **Delivery & Read Receipts (1.0 pt):** Real-time status tracking (Sent $\to$ Delivered $\to$ Read) broadcast to participants (`ReceiptCmd`, `handle_receipt`).
 4. **Cloud Deployment (1.0 pt):** Live Oracle Cloud instance with Docker, Traefik TLS proxy, and automated GitHub Actions CI/CD. *(Explicitly noted in the rubric: "Cloud-based deployment is allowed but optional and will be marked as one special point")*.

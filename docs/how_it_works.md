@@ -18,7 +18,7 @@ Relay is built on a clean **Client-Server model** communicating exclusively over
          |
          |  HTTPS with Gemini key; otherwise internal Docker HTTP (Port 11434)
          v
-[ Gemini 3.8 Flash / Ollama Qwen2.5 fallback ]
+[ Gemini 3.5 Flash-Lite / Ollama Qwen2.5 fallback ]
 ```
 
 * **Frontend (`static/app.js`):** Constructs strongly-typed commands via `ModelCmd` and dispatches them over the WebSocket. UI updates are event-driven and DOM updates are applied surgically (e.g. `appendMessage`, in-place receipt updates).

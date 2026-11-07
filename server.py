@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_FILE = 256 * 1024
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-AI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash") if GEMINI_API_KEY else os.getenv("AI_MODEL", "qwen2.5:0.5b")
+AI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite") if GEMINI_API_KEY else os.getenv("AI_MODEL", "qwen2.5:0.5b")
 AI_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 NAME_PATTERN = re.compile(r"^[\w .-]{1,24}$", re.UNICODE)
 
