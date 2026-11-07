@@ -1,7 +1,9 @@
 # Presentation Slides Content & AI Prompts Log
 **Project:** Relay – WebSocket Chat Application (2110471 Computer Network I)
 **Architecture:** Python `aiohttp` + `Pydantic v2` Dispatcher + Native Browser WebSockets
-**Target:** 20-Slide Implementation Explanation (Score: 12.5 / 12.5 Points)
+**Target:** 20-slide implementation explanation (rubric total: 12.5 points)
+
+**Presentation files:** [Editable PowerPoint](Relay_Implementation_Explanation.pptx) and [filled PDF](Relay_Implementation_Explanation.pdf). Both use the supplied 20-page PDF template. Replace the group and student placeholders on slide 1 in the PowerPoint before presenting. Regenerate from the current source with `python docs/build_presentation.py` after installing `pymupdf` and `python-pptx`.
 
 ---
 
@@ -11,7 +13,7 @@
 * **Title:** Socket Programming: Simple Chat Application
 * **Group:** Group X
 * **Members:** [Student ID] Name Surname, [Student ID] Name Surname
-* **Overview:** A real-time WebSocket chat application featuring 1-on-1 private messaging, self-join group chats, Base64 socket file transfer, message receipts, and AI summarization via Gemini when configured or local Ollama otherwise.
+* **Overview:** A real-time WebSocket chat application featuring 1-on-1 private messaging, self-join group chats, Base64 socket file transfer, message receipts, and user-selected Gemini or local Qwen summaries.
 
 ---
 
@@ -48,16 +50,17 @@
 * **Architecture Flowchart:**
   ```text
   [ Client 1 (Laptop A) ] ──┐
-                            ├──► [ Traefik Proxy : 443 ] ──► [ Python Server : 8080 ] ──► [ Gemini : HTTPS / Ollama : 11434 ]
-  [ Client 2 (Laptop B) ] ──┘     (HTTPS / WSS : 443)          (HTTP / WebSocket : 8080)          (HTTP : 11434)
+                            ├──► [ Traefik : 443 ] ──► [ Python server : 8080 ] ──► [ Gemini API over HTTPS ]
+  [ Client 2 (Laptop B) ] ──┘       (HTTPS / WSS)              │
+                                                             └──► [ Ollama : 11434, private Docker network ]
   ```
 * **How It Works (System Flow):**
   1. Two physical laptops (Client 1 & 2) connect over HTTPS/WSS (Port 443) to Traefik Reverse Proxy.
   2. Traefik terminates TLS/SSL and proxies plain HTTP/WebSocket traffic to Python server (Port 8080) on internal network.
-  3. Python server queries Gemini over HTTPS when a key is configured; otherwise it queries Ollama (Port 11434) over the private network.
+  3. Each summary command selects Gemini or local Qwen. Gemini requests use HTTPS and require a server-side API key; local requests use Ollama on port 11434. A failed Gemini request retries with Ollama.
 * **Key Notes & Highlights:**
   * **Physical Separation:** Completely independent client machines running native browser WebSockets.
-  * **Zero Direct Public Access:** Python server and Ollama run safely behind Traefik inside private Docker networks.
+  * **Public Boundary:** Traefik handles the public HTTPS/WSS route. Ollama has no published port; the Python app also has a host-loopback port for its deployment health check.
 
 ---
 
@@ -71,7 +74,7 @@
     * **How:** Acts as our main channel (`/ws`). All chat actions, messages, receipts, and files travel over this single persistent connection.
   * **HTTP / HTTPS (Application Layer)**
     * **Why:** The standard and simplest way to deliver our web interface to browser clients.
-    * **How:** Serves static files (`index.html`, `app.js`, `style.css`), performs the initial WebSocket upgrade handshake, and queries the configured AI provider.
+    * **How:** `aiohttp` serves static files (`index.html`, `app.js`, `style.css`) and accepts the WebSocket upgrade. The Python server also makes an outgoing HTTP(S) request to the selected AI provider for summaries.
 
 ---
 
@@ -98,7 +101,7 @@
 
   if __name__ == "__main__":
       app = create_app()
-      web.run_app(app, host="0.0.0.0", port=8080)
+      web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
   ```
 * **Code Snapshot 2 (Right: WebSocket Handshake & Central Dispatcher):**
   ```python
@@ -119,7 +122,7 @@
       return socket
   ```
 * **How It Works (Code & Flow):**
-  1. `main()` boots app on port 8080 $\to$ `create_app()` binds static routes and `/ws` WebSocket endpoint.
+  1. The `if __name__ == "__main__"` block calls `create_app()` and starts `web.run_app()` on port 8080 by default; `create_app()` binds static routes and `/ws`.
   2. `ws_handler()` accepts connection (HTTP 101 Upgrade), creates `UserSession(id=UUID)`, and streams frames via `async for msg in socket`.
   3. Incoming text frames are passed to `server.dispatch()` to validate schemas and route to handlers.
 * **Key Notes & Highlights:**
@@ -166,9 +169,16 @@
   async def handle_register(self, session: UserSession, data: dict):
       cmd = RegisterCmd(**data)
 
-      # Enforce case-insensitive uniqueness across active sessions
-      if any(s.name.casefold() == cmd.name.casefold() for s in self.sessions.values()):
+      dead = [s for s in list(self.sessions.values()) if s.socket.closed]
+      for s in dead:
+          await self.disconnect(s)
+
+      if any(s.name.casefold() == cmd.name.casefold()
+             for s in self.sessions.values() if s.id != session.id):
           raise ValueError("That name is already connected. Choose another.")
+
+      if len(self.sessions) >= 100:
+          raise ValueError("The server is full. Try again later.")
 
       session.name = cmd.name
       await self.send(session, {
@@ -180,7 +190,7 @@
 * **How It Works (Code & Flow):**
   1. Client sends `{"type": "register", "name": "..."}` over WebSocket.
   2. `RegisterCmd` trims whitespace and validates length (1–24 chars) and regex `^[\w .-]{1,24}$`.
-  3. `handle_register()` checks `casefold()` against active sessions. If unique, saves `session.name` and replies with `welcome` event.
+  3. `handle_register()` removes closed sockets, checks `casefold()` against other active sessions, and enforces the 100-session limit. If unique, it saves `session.name` and replies with `welcome`.
 * **Key Notes & Highlights:**
   * **Case-Insensitive Check:** Prevents duplicate logins like `Alice` and `alice` at the same time.
   * **Ephemeral Identity:** Name is tied to the active socket session UUID; when disconnected, the name is freed.
@@ -215,6 +225,8 @@
   # server.py: Disconnection & Presence Update
   async def disconnect(self, session: UserSession):
       """Clean up on disconnect and update presence across all clients."""
+      if session.summary_task and not session.summary_task.done():
+          session.summary_task.cancel()
       if self.sessions.pop(session.id, None) is None:
           return
 
@@ -224,6 +236,8 @@
               room.names.pop(session.id, None)
               if not room.members:
                   del self.rooms[room_id]
+          elif room.kind == "private" and not room.members & self.sessions.keys():
+              del self.rooms[room_id]
 
       if session.name:
           await self.broadcast_presence()
@@ -349,7 +363,7 @@
   4. Client chat window renders incoming messages in real time.
 * **Key Notes & Highlights:**
   * **Automatic Ring Buffer:** `deque(maxlen=100)` automatically drops oldest messages beyond 100, preventing server memory overflow.
-  * **UI Separation:** Clean distinction between message input box (`#composer`) and scrollable history window (`#messages`).
+  * **UI Separation:** The message input is inside `#composer`; the scrollable history window is `#msg-box`.
 
 ---
 
@@ -489,10 +503,13 @@
 * **How It Works (Code & Flow):**
   1. `describe_room()` formats group metadata: `id`, `name`, and `members` array `[{"id": ..., "name": ...}]`.
   2. `broadcast_presence()` includes all groups in the global `state` event.
-  3. Every client receives the list and renders all available groups and who is currently inside.
+  3. Every client receives the list and renders each group name and member count. Hovering a group row shows the current member names in a native tooltip:
+     ```js
+     row.title = g.members.length ? `Members: ${g.members.map((m) => m.name).join(", ")}` : "No members yet";
+     ```
 * **Key Notes & Highlights:**
   * **Full Transparency:** Clients can inspect existing groups and their members before deciding to join.
-  * **Live Membership Sync:** Joining or leaving immediately updates the member list for all clients.
+  * **Live Membership Sync:** Joining or leaving broadcasts a new `state` event, so the count and hover tooltip update for all clients.
 
 ---
 
@@ -584,7 +601,7 @@
 * **Title:** Part 3 – Special Points
 * **Rubric Requirement:** 4 special features (1.0 point each, with at least 1 AI feature).
 * **Our 4 Features:**
-  1. **Special Point 1 (AI Feature):** Real-time AI conversation catch-up summaries via Gemini or local Ollama fallback.
+  1. **Special Point 1 (AI Feature):** Per-request Gemini or local Qwen summaries, with automatic local retry after Gemini failure.
   2. **Special Point 2:** Direct file transfer (up to 256 KiB) over persistent WebSocket frames using Base64.
   3. **Special Point 3:** Multi-state message receipts (Sent $\to$ Delivered $\to$ Read) with live status indicators.
   4. **Special Point 4:** Cloud-based automated deployment on Oracle Cloud with Docker, Traefik TLS, and CI/CD.
@@ -592,11 +609,11 @@
 ---
 
 ### Slide 17: Special Point 1: AI Chat Catch-up Summaries (AI Feature)
-* **Description:** Catch up on room discussions with a user-selected Gemini or local Ollama summary. Gemini failure automatically retries with Ollama; the local prompt asks for a one-sentence factual recap.
-* **AI Model:** Gemini 3.5 Flash-Lite via the free-tier API with `GEMINI_API_KEY`; Qwen2.5 0.5B Instruct via Ollama remains the no-key fallback. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
-* **Generative AI Prompt:**
+* **Description:** The browser's Model selector sends `provider: "gemini"` or `provider: "ollama"` with each summary command. Gemini failure or a missing key retries locally; choosing Local Qwen uses Ollama directly.
+* **AI Models:** Gemini 3.5 Flash-Lite via the free-tier API with server-side `GEMINI_API_KEY`, and Qwen2.5 0.5B Instruct via Ollama. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
+* **Development prompt (not the runtime model prompt):**
   ```text
-  "For Special Point 1: Summarize recent room messages asynchronously without blocking WebSocket traffic; use a hosted free-tier model when configured."
+  "For Special Point 1: Summarize recent room messages asynchronously without blocking WebSocket traffic; allow Gemini or local Qwen, with a local retry if Gemini fails."
   ```
 * **Code Snapshot 1 (Left: Summarize Command Schema & Transcript Extraction):**
   ```python
@@ -611,6 +628,8 @@
       room = self.authorized_room(session, cmd.room)
       if session.summary_task and not session.summary_task.done():
           raise ValueError("Your summary is still running.")
+      if self.ai_lock.locked():
+          raise ValueError("AI is busy. Try again shortly.")
 
       transcript = [
           f"{m['name']}: {m['text']}" for m in room.messages
@@ -623,28 +642,28 @@
           self.execute_summarize(session, room.id, transcript[-30:], cmd.provider)
       )
   ```
-* **Code Snapshot 2 (Right: Gemini Async Inference):**
+* **Code Snapshot 2 (Right: Provider Selection & Local Retry, shortened excerpt):**
   ```python
-  # server.py: Gemini branch of AI summary execution
-  async def execute_summarize(self, session: UserSession, room_id: str, transcript: list[str], provider: str = "gemini"):
-      await self.send(session, {"type": "summary_pending", "room": room_id})
-      async with self.ai_lock:
-          async with HttpClient(timeout=ClientTimeout(total=120)) as client:
-              resp = await client.post(
-                  f"https://generativelanguage.googleapis.com/v1beta/models/{AI_MODEL}:generateContent",
-                  headers={"x-goog-api-key": GEMINI_API_KEY},
-                  json={"contents": [{"role": "user", "parts": [{"text": "Chat transcript:\n" + "\n".join(transcript)}]}]},
-              )
-              result = await resp.json()
-      summary = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-      await self.send(session, {"type": "summary", "room": room_id, "text": summary, "model": AI_MODEL})
+  backends = ("gemini", "ollama") if provider == "gemini" and GEMINI_API_KEY else ("ollama",)
+  for backend in backends:
+      model = GEMINI_MODEL if backend == "gemini" else OLLAMA_MODEL
+      try:
+          # POST to Gemini generateContent or Ollama /api/chat; parse response.
+          await self.send(session, {"type": "summary", "room": room_id,
+                                    "text": text[:6000], "model": model})
+          break
+      except Exception:
+          if backend == "ollama":
+              raise
+          logging.warning("Gemini summary failed; retrying with Ollama", exc_info=True)
   ```
 * **How It Works (Code & Flow):**
-  1. User sends `{"type": "summarize", "room": room_id}` $\to$ server collects up to 30 recent room messages.
+  1. User selects a provider and sends `{"type": "summarize", "room": room_id, "provider": "gemini"}` (or `"ollama"`). The server collects up to 30 recent text messages.
   2. Server creates an async task (`create_task`) calling the selected provider. Gemini calls use HTTPS; local Qwen calls use internal HTTP. Gemini failures retry with local Qwen.
   3. Server sends `summary_pending` to the requesting user, waits under `asyncio.Lock`, and returns the summary.
 * **Key Notes & Highlights:**
   * **Data Flow:** Gemini mode sends recent room text to Google; Ollama mode keeps inference on the Oracle server.
+  * **Runtime prompts:** Gemini requests three brief bullet points. Local Qwen requests one factual sentence about agreed plans and tasks, at temperature 0. The local 0.5B model can still miss details; a prompt change does not guarantee accuracy.
   * **Non-Blocking Execution:** Async background task prevents LLM inference delays from blocking active WebSocket messaging.
 
 ---
@@ -767,47 +786,50 @@
   ```text
   "For Special Point 4: Write a GitHub Actions workflow and Docker Compose config with Traefik to auto-deploy the app to Oracle Cloud on git push."
   ```
-* **Code Snapshot 1 (Left: Traefik Reverse Proxy Configuration):**
+* **Code Snapshot 1 (Left: Relay's Traefik Labels, excerpt):**
   ```yaml
-  # compose.oracle.yml: Production Traefik TLS Reverse Proxy
+  # compose.oracle.yml: Relay joins an existing Traefik network
   services:
     app:
       environment:
         PUBLIC_ORIGIN: https://${APP_DOMAIN:-relay.161.118.238.148.sslip.io}
+      networks:
+        - default
+        - proxy
       labels:
         traefik.enable: "true"
-        traefik.http.routers.relay.rule: Host(`relay.161.118.238.148.sslip.io`)
+        traefik.docker.network: eventory-production_default
+        traefik.http.services.relay.loadbalancer.server.port: "8080"
+        traefik.http.routers.relay.rule: Host(`${APP_DOMAIN:-relay.161.118.238.148.sslip.io}`)
         traefik.http.routers.relay.entrypoints: websecure
         traefik.http.routers.relay.tls: "true"
         traefik.http.routers.relay.tls.certresolver: letsencrypt
+  networks:
+    proxy:
+      external: true
+      name: eventory-production_default
   ```
-* **Code Snapshot 2 (Right: GitHub Actions CD Pipeline):**
-  ```yaml
-  # .github/workflows/deploy.yml: Continuous Deployment Pipeline
-  - uses: docker/build-push-action@v4
-    with:
-      context: .
-      platforms: linux/amd64,linux/arm64
-      push: true
-      tags: ${{ steps.image.outputs.name }}
-
-  - name: Pull and deploy on Oracle
-    run: |
-      ssh "${opts[@]}" "$target" "bash ~/relay/deploy.sh '$IMAGE'"
-      curl --fail https://relay.161.118.238.148.sslip.io/healthz
+* **Code Snapshot 2 (Right: Oracle Deployment Command):**
+  ```bash
+  # scripts/deploy.sh: reads both Compose files, then starts the image
+  compose=(docker compose -f compose.yml -f compose.oracle.yml)
+  export APP_IMAGE="$image"
+  "${compose[@]}" pull app ollama model-pull
+  "${compose[@]}" up -d --no-build --wait --wait-timeout 600
+  curl --fail --silent --show-error --retry 5 --retry-delay 2 http://127.0.0.1:8080/healthz
   ```
 * **How It Works (Code & Flow):**
-  1. Code pushed to `main` branch $\to$ GitHub Actions builds multi-architecture Docker image (AMD64 & ARM64).
-  2. Image pushed to GitHub Container Registry (GHCR) $\to$ Actions connects via SSH to Oracle Cloud VM.
-  3. Runs `deploy.sh` to restart containers behind Traefik reverse proxy and validates `/healthz`.
+  1. A code push to `main` (or a manual workflow run) builds an AMD64/ARM64 image and publishes it to GitHub Container Registry. Documentation-only pushes are ignored by this workflow.
+  2. Actions connects to Oracle over SSH, transfers both Compose files and `deploy.sh`, and passes the GHCR token and `GEMINI_API_KEY` secret to the script over standard input.
+  3. `deploy.sh` pulls the image, runs Compose with both files, checks local `/healthz`, and records the successful image for rollback. The workflow also checks public HTTPS `/healthz`.
 * **Key Notes & Highlights:**
-  * **Automated CI/CD:** Fully automated push-to-deploy pipeline with zero manual server intervention.
-  * **Production TLS:** Traefik terminates Let's Encrypt certificates automatically for secure `https` and `wss`.
+  * **Shared Proxy:** Relay does not start another Traefik container. It joins the existing `eventory-production_default` Docker network and supplies routing labels; that network belongs to a separate project.
+  * **Public Name:** `relay.161.118.238.148.sslip.io` resolves to the Oracle server's IP without registering a domain. Traefik uses Let's Encrypt for HTTPS/WSS.
 
 ---
 
-## Slide Preparation Complete (Slides 01 – 20)
-All 20 slides strictly conform to the presentation slide template:
+## Slide Preparation Outline (Slides 01 – 20)
+This document provides material for the 20-slide presentation:
 1. Requirements & Titles
 2. Engineering-grade Generative AI Prompts
 3. Two-Box Backend Code Snapshots (Left: Pydantic Schema / Right: Handler Execution)
