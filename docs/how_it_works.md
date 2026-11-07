@@ -238,7 +238,7 @@ sequenceDiagram
 ```
 
 1. **Concurrency Control:** Server uses `self.ai_lock = asyncio.Lock()` to allow one summary request at a time.
-2. **Provider:** With `GEMINI_API_KEY`, the server sends recent chat text to Gemini over HTTPS. Without it, the server uses Ollama via internal HTTP (`http://ollama:11434/api/chat`).
+2. **Provider:** The user chooses Gemini or local Qwen for each summary. A Gemini request sends recent chat text to Google over HTTPS; if Gemini fails or has no key, the server retries with Ollama via internal HTTP (`http://ollama:11434/api/chat`).
 3. **Delivery:** The summary is sent to the requesting client via `{"type": "summary", ...}` and displayed in the chat panel.
 
 ---

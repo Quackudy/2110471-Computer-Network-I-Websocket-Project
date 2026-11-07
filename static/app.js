@@ -13,7 +13,7 @@ const ModelCmd = {
   file: (room, filename, data) => ({ type: "file", room, filename, data }),
   read: (room, ids) => ({ type: "read", room, ids }),
   received: (room, ids) => ({ type: "received", room, ids }),
-  summarize: (room) => ({ type: "summarize", room }),
+  summarize: (room, provider) => ({ type: "summarize", room, provider }),
 };
 
 // ==============================================================================
@@ -54,6 +54,7 @@ function setLoginBusy(busy) {
 
 function setSummarizeBusy(busy) {
   const btn = $("btn-summarize");
+  $("summary-provider").disabled = busy;
   if (btn) {
     btn.disabled = busy;
     btn.textContent = busy ? "Summarizing..." : "AI Summary";
@@ -387,7 +388,7 @@ $("group-form").addEventListener("submit", (e) => {
 $("btn-summarize").addEventListener("click", () => {
   if (state.activeRoomId) {
     setSummarizeBusy(true);
-    send(ModelCmd.summarize(state.activeRoomId));
+    send(ModelCmd.summarize(state.activeRoomId, $("summary-provider").value));
   }
 });
 

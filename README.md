@@ -42,7 +42,7 @@ Configuration defaults can be customized via `.env` (refer to `.env.example`).
 
 ## AI Catch-Up Summaries
 
-The server uses **Gemini 3.5 Flash-Lite** for summaries when `GEMINI_API_KEY` is configured. Google currently lists this model on its [free tier](https://ai.google.dev/gemini-api/docs/pricing), subject to usage limits. Create a key in [Google AI Studio](https://aistudio.google.com/app/apikey), then add it as the repository's GitHub Actions secret `GEMINI_API_KEY` for Oracle deployment. Keep the key out of the browser and repository. Summarized chat text is sent to Google when this option is enabled. Without a key, the existing local **Ollama / Qwen2.5 0.5B** summary remains available.
+The summary control lets users choose **Gemini 3.5 Flash-Lite** or local **Ollama / Qwen2.5 0.5B** for each request. If Gemini is unavailable or its key is missing, the server automatically retries with Ollama. Google currently lists Gemini 3.5 Flash-Lite on its [free tier](https://ai.google.dev/gemini-api/docs/pricing), subject to usage limits. Create a key in [Google AI Studio](https://aistudio.google.com/app/apikey), then add it as the repository's GitHub Actions secret `GEMINI_API_KEY` for Oracle deployment. Keep the key out of the browser and repository. Gemini requests send recent room text to Google; local Qwen requests remain on the Oracle server.
 
 To run the full stack (server + Ollama) locally with Docker:
 

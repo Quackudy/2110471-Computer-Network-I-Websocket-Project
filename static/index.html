@@ -63,7 +63,14 @@
             <b id="room-title"></b>
             <span id="room-members" class="muted"></span>
           </div>
-          <button id="btn-summarize" type="button">AI Summary</button>
+          <div class="summary-actions">
+            <label for="summary-provider">Model</label>
+            <select id="summary-provider">
+              <option value="gemini">Gemini (Qwen fallback)</option>
+              <option value="ollama">Local Qwen</option>
+            </select>
+            <button id="btn-summarize" type="button">AI Summary</button>
+          </div>
         </div>
 
         <!-- AI Summary -->

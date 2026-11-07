@@ -24,7 +24,9 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_FILE = 256 * 1024
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-AI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite") if GEMINI_API_KEY else os.getenv("AI_MODEL", "qwen2.5:0.5b")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+OLLAMA_MODEL = os.getenv("AI_MODEL", "qwen2.5:0.5b")
+AI_MODEL = GEMINI_MODEL if GEMINI_API_KEY else OLLAMA_MODEL
 AI_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 NAME_PATTERN = re.compile(r"^[\w .-]{1,24}$", re.UNICODE)
 
@@ -137,6 +139,7 @@ class SummarizeCmd(BaseModel):
     """Validates requesting AI room summary (Special 1)."""
     type: Literal["summarize"] = "summarize"
     room: str
+    provider: Literal["gemini", "ollama"] = "gemini"
 
 
 # ==============================================================================
@@ -415,11 +418,11 @@ class ChatServer:
             raise ValueError("Send some text messages before requesting a summary.")
 
         session.summary_task = asyncio.create_task(
-            self.execute_summarize(session, room.id, transcript[-30:])
+            self.execute_summarize(session, room.id, transcript[-30:], cmd.provider)
         )
 
-    async def execute_summarize(self, session: UserSession, room_id: str, transcript: list[str]):
-        """Query Gemini when configured, otherwise use local Ollama."""
+    async def execute_summarize(self, session: UserSession, room_id: str, transcript: list[str], provider: str = "gemini"):
+        """Query the selected provider; retry locally if Gemini fails."""
         await self.send(session, {"type": "summary_pending", "room": room_id})
         try:
             async with self.ai_lock:
@@ -429,39 +432,46 @@ class ChatServer:
                                "Use the same language as the conversation.")
                 prompt = "Chat transcript:\n" + "\n".join(transcript)[-12000:]
                 async with HttpClient(timeout=ClientTimeout(total=120)) as http_client:
-                    if GEMINI_API_KEY:
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{AI_MODEL}:generateContent"
-                        payload = {
-                            "systemInstruction": {"parts": [{"text": instruction}]},
-                            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800},
-                        }
-                        headers = {"x-goog-api-key": GEMINI_API_KEY}
-                    else:
-                        url = f"{AI_URL}/api/chat"
-                        payload = {
-                            "model": AI_MODEL, "stream": False,
-                            "messages": [{"role": "system", "content": instruction},
-                                         {"role": "user", "content": prompt}],
-                            "options": {"temperature": 0.2, "num_predict": 240, "num_ctx": 4096},
-                        }
-                        headers = {}
-                    async with http_client.post(url, json=payload, headers=headers) as response:
-                        if response.status != 200:
-                            raise ValueError("AI quota reached or model unavailable. Try again later."
-                                             if GEMINI_API_KEY else
-                                             "AI model is unavailable. Ask the administrator to check Ollama.")
-                        result = await response.json()
-
-            if GEMINI_API_KEY:
-                candidates = result.get("candidates") or []
-                parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
-                text = "".join(part.get("text", "") for part in parts).strip()
-            else:
-                text = result.get("message", {}).get("content", "").strip()
-            if not text:
-                raise ValueError("The model returned no summary. Try again.")
-            await self.send(session, {"type": "summary", "room": room_id, "text": text[:6000], "model": AI_MODEL})
+                    backends = ("gemini", "ollama") if provider == "gemini" and GEMINI_API_KEY else ("ollama",)
+                    for backend in backends:
+                        model = GEMINI_MODEL if backend == "gemini" else OLLAMA_MODEL
+                        try:
+                            if backend == "gemini":
+                                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                                payload = {
+                                    "systemInstruction": {"parts": [{"text": instruction}]},
+                                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800},
+                                }
+                                headers = {"x-goog-api-key": GEMINI_API_KEY}
+                            else:
+                                url = f"{AI_URL}/api/chat"
+                                payload = {
+                                    "model": model, "stream": False,
+                                    "messages": [{"role": "system", "content": instruction},
+                                                 {"role": "user", "content": prompt}],
+                                    "options": {"temperature": 0.2, "num_predict": 240, "num_ctx": 4096},
+                                }
+                                headers = {}
+                            async with http_client.post(url, json=payload, headers=headers) as response:
+                                if response.status != 200:
+                                    raise ValueError("AI provider is unavailable. Try again later.")
+                                result = await response.json()
+                            if backend == "gemini":
+                                candidates = result.get("candidates") or []
+                                parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+                                text = "".join(part.get("text", "") for part in parts).strip()
+                            else:
+                                text = result.get("message", {}).get("content", "").strip()
+                            if not text:
+                                raise ValueError("The model returned no summary. Try again.")
+                            await self.send(session, {"type": "summary", "room": room_id,
+                                                      "text": text[:6000], "model": model})
+                            break
+                        except Exception:
+                            if backend == "ollama":
+                                raise
+                            logging.warning("Gemini summary failed; retrying with Ollama", exc_info=True)
         except (ValueError, TimeoutError, OSError) as error:
             await self.send(session, {"type": "summary_error", "room": room_id,
                                      "message": str(error) if isinstance(error, ValueError)
